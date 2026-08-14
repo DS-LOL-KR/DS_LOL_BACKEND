@@ -1,0 +1,205 @@
+// ============================================================================
+// 이 스키마는 Notion 명세서 "ERD" 문서를 기준으로 재작성되었습니다.
+// (대시보드 > 명세서 > ERD, 2026-08-08 기준 스냅샷)
+// 실제 구현 로직(서비스 계층)은 전부 비워져 있고, 여기 모델 구조만 ERD를 그대로 반영합니다.
+// 컬럼/테이블명은 ERD의 snake_case를 @map/@@map으로 그대로 매핑했습니다.
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ERD: users
+// TODO: ERD에는 password_hash(not null)가 있지만, 기능명세서/API명세서는 전부
+// "구글 OS로 로그인"만 다룹니다. OAuth 전용이라면 password_hash를 nullable로
+// 바꿔야 할 가능성이 높음 — ERD 원문 주석도 "OAuth 전용이면 추후 nullable 검토"
+// 라고 되어 있으니, 실제 구글 로그인 구현 착수 전에 이 필드를 어떻게 할지 먼저
+// 확인해야 합니다. 또한 ERD에는 googleId 같은 구글 고유 식별자 컬럼이 없으므로,
+// 로그인 시 유저를 무엇으로 매칭할지(email? 별도 컬럼 추가?)도 함께 정해야 합니다.
+model User {
+  id               Int      @id @default(autoincrement())
+  email            String   @unique
+  passwordHash     String   @map("password_hash")
+  nickname         String
+  profileImageUrl  String?  @map("profile_image_url")
+  bio              String?
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  gameAccounts        GameAccount[]
+  ownedGroups         Group[]              @relation("GroupOwner")
+  groupMemberships    GroupMember[]
+  createdMatches      CustomMatch[]        @relation("MatchCreatedBy")
+  matchParticipations CustomMatchParticipant[]
+  evaluationsGiven    UserEvaluation[]     @relation("EvaluationEvaluator")
+  evaluationsReceived UserEvaluation[]     @relation("EvaluationTarget")
+
+  @@map("users")
+}
+
+// ERD: games — 서비스가 지원하는 게임 종목 (LOL, VALORANT 등)
+model Game {
+  id   Int    @id @default(autoincrement())
+  name String
+  code String @unique
+
+  groups       Group[]
+  gameAccounts GameAccount[]
+  customMatches CustomMatch[]
+
+  @@map("games")
+}
+
+// ERD: game_accounts — 유저가 연결한 게임별 계정 (기능명세서 "게임 계정 / 전적")
+model GameAccount {
+  id            Int      @id @default(autoincrement())
+  userId        Int      @map("user_id")
+  gameId        Int      @map("game_id")
+  gameNickname  String   @map("game_nickname")
+  puuid         String
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  user  User @relation(fields: [userId], references: [id])
+  game  Game @relation(fields: [gameId], references: [id])
+  stats UserGameStat?
+  positionStats UserPositionStat[]
+
+  @@unique([userId, gameId]) // 중복 등록 방지 (ERD 원문 제약)
+  @@map("game_accounts")
+}
+
+// ERD: user_game_stats
+// TODO: ERD에 game_account_id 기준 unique 제약이 명시되어 있지 않지만, 계정당
+// 통계가 1행이어야 하는 구조로 보입니다(1:1). 실제 구현 시 unique 제약을 추가할지
+// 명세서 작성자와 확인이 필요합니다 — 일단 ERD 원문 그대로 두었습니다.
+model UserGameStat {
+  id             Int      @id @default(autoincrement())
+  gameAccountId  Int      @unique @map("game_account_id")
+  officialTier   String?  @map("official_tier")
+  internalMmr    Int      @default(1000) @map("internal_mmr")
+  mainPosition   String?  @map("main_position")
+  subPosition    String?  @map("sub_position")
+  mannerScore    Float    @default(3.5) @map("manner_score")
+  updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
+
+  gameAccount GameAccount @relation(fields: [gameAccountId], references: [id])
+
+  @@map("user_game_stats")
+}
+
+// ERD: user_position_stats — 라인별(TOP/JUG/MID/ADC/SUP) 티어/전적 (기능명세서 "라인별 티어선정")
+model UserPositionStat {
+  id            Int    @id @default(autoincrement())
+  gameAccountId Int    @map("game_account_id")
+  position      String // TOP / JUG / MID / ADC / SUP
+  positionMmr   Int    @default(1000) @map("position_mmr")
+  gamesPlayed   Int    @default(0) @map("games_played")
+  winRate       Float  @default(0.0) @map("win_rate")
+
+  gameAccount GameAccount @relation(fields: [gameAccountId], references: [id])
+
+  @@unique([gameAccountId, position])
+  @@map("user_position_stats")
+}
+
+// ERD: user_evaluations — 내전 종료 후 상호 평가 (기능명세서 "사용자 평가")
+model UserEvaluation {
+  id          Int      @id @default(autoincrement())
+  evaluatorId Int      @map("evaluator_id")
+  targetId    Int      @map("target_id")
+  score       Int // 1~5
+  comment     String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  evaluator User @relation("EvaluationEvaluator", fields: [evaluatorId], references: [id])
+  target    User @relation("EvaluationTarget", fields: [targetId], references: [id])
+
+  @@map("user_evaluations")
+}
+
+// ERD: groups — 기능명세서 "그룹" 카테고리 전반
+model Group {
+  id         Int      @id @default(autoincrement())
+  name       String
+  ownerId    Int      @map("owner_id")
+  gameId     Int      @map("game_id")
+  inviteCode String   @unique @map("invite_code")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  owner   User          @relation("GroupOwner", fields: [ownerId], references: [id])
+  game    Game          @relation(fields: [gameId], references: [id])
+  members GroupMember[]
+  matches CustomMatch[]
+
+  @@map("groups")
+}
+
+enum Role {
+  OWNER
+  MEMBER
+}
+
+// ERD: group_members
+model GroupMember {
+  id       Int      @id @default(autoincrement())
+  groupId  Int      @map("group_id")
+  userId   Int      @map("user_id")
+  role     Role     @default(MEMBER)
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  group Group @relation(fields: [groupId], references: [id])
+  user  User  @relation(fields: [userId], references: [id])
+
+  @@unique([groupId, userId]) // 중복 참가 방지 (ERD 원문 제약)
+  @@map("group_members")
+}
+
+enum MatchStatus {
+  WAITING
+  MATCHED
+  FINISHED
+}
+
+enum Team {
+  TEAM_A
+  TEAM_B
+}
+
+// ERD: custom_matches — 기능명세서 "내전" 카테고리 전반 (팀 구성, 내전 기록 조회 등)
+// ERD 원문 주석: group_id는 "(신규)" 표시 — 어느 그룹의 내전인지 나중에 추가된 컬럼.
+model CustomMatch {
+  id           Int          @id @default(autoincrement())
+  groupId      Int          @map("group_id")
+  gameId       Int          @map("game_id")
+  createdBy    Int          @map("created_by")
+  status       MatchStatus  @default(WAITING)
+  winningTeam  Team?        @map("winning_team")
+  createdAt    DateTime     @default(now()) @map("created_at")
+
+  group        Group                    @relation(fields: [groupId], references: [id])
+  game         Game                     @relation(fields: [gameId], references: [id])
+  creator      User                     @relation("MatchCreatedBy", fields: [createdBy], references: [id])
+  participants CustomMatchParticipant[]
+
+  @@map("custom_matches")
+}
+
+// ERD: custom_match_participants
+model CustomMatchParticipant {
+  id                Int    @id @default(autoincrement())
+  matchId           Int    @map("match_id")
+  userId            Int    @map("user_id")
+  assignedTeam      Team?  @map("assigned_team")
+  assignedPosition  String? @map("assigned_position")
+  mmrChange         Int    @default(0) @map("mmr_change")
+
+  match CustomMatch @relation(fields: [matchId], references: [id])
+  user  User        @relation(fields: [userId], references: [id])
+
+  @@unique([matchId, userId])
+  @@map("custom_match_participants")
+}
