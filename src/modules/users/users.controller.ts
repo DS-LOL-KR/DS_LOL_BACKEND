@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from "express"; // Express 컨트롤러 함수 시그니처에 필요한 타입
 import * as usersService from "./users.service"; // 실제 프로필 조회/수정 로직은 서비스 계층에 위임
+import { AppError } from "../../lib/AppError"; // :id가 숫자가 아닐 때 400으로 명확하게 막기 위해 사용
 
 // GET /users/me
 export async function getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -14,7 +15,13 @@ export async function getMe(req: Request, res: Response, next: NextFunction): Pr
 // GET /users/:id
 export async function getUser(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const user = await usersService.getUserById(Number(req.params.id));
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id)) {
+      next(new AppError(400, "Invalid user id"));
+      return;
+    }
+
+    const user = await usersService.getUserById(id);
     res.status(200).json({ user });
   } catch (err) {
     next(err);
