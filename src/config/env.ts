@@ -12,6 +12,9 @@ const envSchema = z.object({
 
   GOOGLE_CLIENT_ID: z.string().min(1, "GOOGLE_CLIENT_ID is required"),
   GOOGLE_CLIENT_SECRET: z.string().min(1, "GOOGLE_CLIENT_SECRET is required"),
+  // 구글 콘솔에 등록한 승인된 리디렉션 URI와 한 글자도 다르면 안 됨 (예:
+  // http://localhost:4000/api/auth/google/callback)
+  GOOGLE_REDIRECT_URI: z.string().min(1, "GOOGLE_REDIRECT_URI is required"),
 
   RIOT_API_KEY: z.string().min(1, "RIOT_API_KEY is required"),
   RIOT_REGION: z.string().default("kr"),
