@@ -45,9 +45,10 @@ model Game {
   name String
   code String @unique
 
-  groups       Group[]
-  gameAccounts GameAccount[]
-  customMatches CustomMatch[]
+  groups         Group[]
+  gameAccounts   GameAccount[]
+  customMatches  CustomMatch[]
+  matchHistories MatchHistory[]
 
   @@map("games")
 }
@@ -65,6 +66,8 @@ model GameAccount {
   game  Game @relation(fields: [gameId], references: [id])
   stats UserGameStat?
   positionStats UserPositionStat[]
+  matchHistoryParticipants MatchHistoryParticipant[]
+  championMasteries        ChampionMastery[]
 
   @@unique([userId, gameId]) // 중복 등록 방지 (ERD 원문 제약)
   @@map("game_accounts")
@@ -82,11 +85,68 @@ model UserGameStat {
   mainPosition   String?  @map("main_position")
   subPosition    String?  @map("sub_position")
   mannerScore    Float    @default(3.5) @map("manner_score")
+  summonerLevel  Int?     @map("summoner_level") // (신규) 라이엇 소환사 레벨
+  profileIconId  Int?     @map("profile_icon_id") // (신규) 프로필 아이콘 ID
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
   gameAccount GameAccount @relation(fields: [gameAccountId], references: [id])
 
   @@map("user_game_stats")
+}
+
+// ERD: match_histories (신규, 2026-08-19) — 라이엇 Match-V5로 동기화한 실제 매치 기록
+model MatchHistory {
+  id              Int      @id @default(autoincrement())
+  riotMatchId     String   @unique @map("riot_match_id")
+  gameId          Int      @map("game_id")
+  queueType       String?  @map("queue_type")
+  playedAt        DateTime @map("played_at")
+  durationSeconds Int      @map("duration_seconds")
+  syncedAt        DateTime @default(now()) @map("synced_at")
+
+  game         Game                      @relation(fields: [gameId], references: [id])
+  participants MatchHistoryParticipant[]
+
+  @@map("match_histories")
+}
+
+// ERD: match_history_participants (신규) — 그 매치에서 "우리가 추적하는 계정"의 개인
+// 스탯만 저장. 나머지 9명(우리 시스템에 없는 플레이어)은 저장하지 않음.
+model MatchHistoryParticipant {
+  id            Int     @id @default(autoincrement())
+  matchId       Int     @map("match_id")
+  gameAccountId Int     @map("game_account_id")
+  championId    Int     @map("champion_id")
+  position      String? // TOP/JUNGLE/MIDDLE/BOTTOM/UTILITY — 라이엇이 못 주면 null
+  kills         Int
+  deaths        Int
+  assists       Int
+  cs            Int
+  goldEarned    Int     @map("gold_earned")
+  damageDealt   Int     @map("damage_dealt")
+  visionScore   Int     @map("vision_score")
+  win           Boolean
+
+  match       MatchHistory @relation(fields: [matchId], references: [id])
+  gameAccount GameAccount  @relation(fields: [gameAccountId], references: [id])
+
+  @@unique([matchId, gameAccountId])
+  @@map("match_history_participants")
+}
+
+// ERD: champion_masteries (신규) — 계정별 챔피언 숙련도 (라이엇 Champion-Mastery-V4)
+model ChampionMastery {
+  id            Int      @id @default(autoincrement())
+  gameAccountId Int      @map("game_account_id")
+  championId    Int      @map("champion_id")
+  masteryLevel  Int      @map("mastery_level")
+  masteryPoints Int      @map("mastery_points")
+  lastPlayTime  DateTime @map("last_play_time")
+
+  gameAccount GameAccount @relation(fields: [gameAccountId], references: [id])
+
+  @@unique([gameAccountId, championId])
+  @@map("champion_masteries")
 }
 
 // ERD: user_position_stats — 라인별(TOP/JUG/MID/ADC/SUP) 티어/전적 (기능명세서 "라인별 티어선정")
