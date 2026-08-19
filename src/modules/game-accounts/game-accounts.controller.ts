@@ -141,3 +141,16 @@ export async function listChampionMasteries(req: Request, res: Response, next: N
     next(err);
   }
 }
+
+// GET /game-accounts/:id/champion-stats
+export async function getChampionStats(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const championStats = await gameAccountsService.getChampionStats(id);
+    res.status(200).json({ championStats });
+  } catch (err) {
+    next(err);
+  }
+}

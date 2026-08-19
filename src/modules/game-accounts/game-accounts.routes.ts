@@ -25,6 +25,7 @@ gameAccountsRouter.get("/:id/stats", gameAccountsController.getGameAccountStats)
 gameAccountsRouter.post("/:id/match-history/sync", gameAccountsController.syncMatchHistory);
 gameAccountsRouter.get("/:id/match-history", gameAccountsController.listMatchHistory);
 gameAccountsRouter.get("/:id/champion-masteries", gameAccountsController.listChampionMasteries);
+gameAccountsRouter.get("/:id/champion-stats", gameAccountsController.getChampionStats);
 
 // app.ts에서 /api/games로 마운트 (기능명세서: "게임 종목 선택")
 export const gamesRouter = Router();

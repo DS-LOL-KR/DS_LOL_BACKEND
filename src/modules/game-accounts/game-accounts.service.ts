@@ -20,6 +20,10 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+// 챔피언 숙련도는 화면에 몇 개 보여주는 용도라 전체(많으면 170개)를 다 저장할
+// 필요가 없음 — 계정당 상위 N개만 유지.
+const TOP_CHAMPION_MASTERY_COUNT = 3;
+
 // 기능명세서: "게임 종목 선택" — 어떤 게임으로 내전할지 선택할 때 쓰는 목록
 // API 명세서: GET /games
 export async function listGames() {
@@ -120,18 +124,18 @@ export async function refreshGameAccountStats(userId: number, gameAccountId: num
     },
   });
 
-  // 챔피언 숙련도는 계정이 플레이한 챔피언 수만큼(많으면 100개 이상) 오는데, 서로
-  // 독립적인 행이라 굳이 한 트랜잭션으로 묶지 않고 병렬로 upsert.
-  await Promise.all(
-    masteries.map((mastery) =>
-      prisma.championMastery.upsert({
-        where: { gameAccountId_championId: { gameAccountId, championId: mastery.championId } },
-        update: {
-          masteryLevel: mastery.championLevel,
-          masteryPoints: mastery.championPoints,
-          lastPlayTime: new Date(mastery.lastPlayTime),
-        },
-        create: {
+  // 상위 N개만 유지 — 예전엔 top 3였다가 이번엔 밀려난 챔피언이 테이블에 계속
+  // 남아있으면 안 되므로, 매번 이 계정의 기존 기록을 전부 지우고 최신 top N으로
+  // 통째로 교체함(부분 upsert가 아니라 delete + create).
+  const topMasteries = [...masteries]
+    .sort((a, b) => b.championPoints - a.championPoints)
+    .slice(0, TOP_CHAMPION_MASTERY_COUNT);
+
+  await prisma.$transaction([
+    prisma.championMastery.deleteMany({ where: { gameAccountId } }),
+    ...topMasteries.map((mastery) =>
+      prisma.championMastery.create({
+        data: {
           gameAccountId,
           championId: mastery.championId,
           masteryLevel: mastery.championLevel,
@@ -140,7 +144,7 @@ export async function refreshGameAccountStats(userId: number, gameAccountId: num
         },
       }),
     ),
-  );
+  ]);
 
   return stats;
 }
@@ -157,13 +161,18 @@ export async function syncMatchHistory(
 
   const matchIds = await fetchMatchIdsByPuuid(account.puuid, input.count);
 
-  // 이미 저장된 매치는 다시 상세 조회(Match-V5는 매치당 1번 더 호출해야 함)할
-  // 필요가 없어서 걸러냄 — 라이엇 rate limit을 아끼는 핵심 최적화.
-  const existing = await prisma.matchHistory.findMany({
-    where: { riotMatchId: { in: matchIds } },
-    select: { riotMatchId: true },
+  // "이미 동기화됨"은 반드시 이 game_account 기준이어야 함 — match_histories는
+  // 여러 계정이 공유하는 전역 테이블이라, 다른 계정이 먼저 동기화해둔 매치라고
+  // 무조건 건너뛰면 이 계정의 참여 기록(match_history_participants)이 아예
+  // 안 만들어지는 버그가 생김(실제로 재현됨: 같은 puuid를 다른 game_account로
+  // 다시 연결했을 때 5개가 통째로 누락됨). 그래서 "이 계정"이 이미 참여 기록을
+  // 갖고 있는 매치만 걸러내고, 나머지는 match_histories 존재 여부와 무관하게
+  // 상세 조회를 다시 해서 이 계정의 참여 기록을 만든다.
+  const existingParticipations = await prisma.matchHistoryParticipant.findMany({
+    where: { gameAccountId, match: { riotMatchId: { in: matchIds } } },
+    select: { match: { select: { riotMatchId: true } } },
   });
-  const existingIds = new Set(existing.map((m) => m.riotMatchId));
+  const existingIds = new Set(existingParticipations.map((p) => p.match.riotMatchId));
   const newMatchIds = matchIds.filter((id) => !existingIds.has(id));
 
   let syncedCount = 0;
@@ -294,6 +303,40 @@ export async function listChampionMasteries(gameAccountId: number, limit: number
     orderBy: { masteryPoints: "desc" },
     take: limit,
   });
+}
+
+// API 명세서: GET /game-accounts/:id/champion-stats
+// 새 테이블 없이, 이미 동기화해둔 match_history_participants를 championId로
+// 그때그때 묶어서 계산함 — 그래서 이 값은 "평생 전적"이 아니라 "지금까지
+// match-history/sync로 동기화해둔 매치 범위 안에서"의 챔피언별 승률.
+export async function getChampionStats(gameAccountId: number) {
+  const account = await prisma.gameAccount.findUnique({ where: { id: gameAccountId } });
+  if (!account) {
+    throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
+  }
+
+  const participants = await prisma.matchHistoryParticipant.findMany({
+    where: { gameAccountId },
+    select: { championId: true, win: true },
+  });
+
+  const grouped = new Map<number, { games: number; wins: number }>();
+  for (const p of participants) {
+    const entry = grouped.get(p.championId) ?? { games: 0, wins: 0 };
+    entry.games += 1;
+    if (p.win) entry.wins += 1;
+    grouped.set(p.championId, entry);
+  }
+
+  return Array.from(grouped.entries())
+    .map(([championId, { games, wins }]) => ({
+      championId,
+      gamesPlayed: games,
+      wins,
+      losses: games - wins,
+      winRate: wins / games,
+    }))
+    .sort((a, b) => b.gamesPlayed - a.gamesPlayed);
 }
 
 // API 명세서: GET /game-accounts/:id/stats
