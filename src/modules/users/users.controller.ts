@@ -39,10 +39,17 @@ export async function updateMe(req: Request, res: Response, next: NextFunction):
 }
 
 // POST /users/me/profile-image
+// req.file은 profileImageUpload 미들웨어(라우트에서 이 핸들러보다 먼저 실행)가
+// 채워줌 — 그 미들웨어가 이미 파일 없음/형식/용량 문제를 다 걸러내므로 여기서는
+// req.file이 항상 있다고 가정해도 되지만, 방어적으로 한 번 더 확인.
 export async function updateProfileImage(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    // TODO: multer 등으로 req.file 채워지도록 라우트에 업로드 미들웨어 추가 필요.
-    const user = await usersService.updateProfileImage(req.user!.id, (req as { file?: unknown }).file);
+    if (!req.file) {
+      next(new AppError(400, "업로드할 파일이 없습니다."));
+      return;
+    }
+
+    const user = await usersService.updateProfileImage(req.user!.id, req.file.filename);
     res.status(200).json({ user });
   } catch (err) {
     next(err);

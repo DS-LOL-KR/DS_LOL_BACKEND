@@ -32,6 +32,12 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@db:5432/${POSTGRES_DB:-ds_lol_dev}
     ports:
       - "${PORT:-4000}:${PORT:-4000}"
+    volumes:
+      # 프로필 이미지 등 업로드 파일을 로컬 디스크에 저장하는 방식이라, 이 볼륨이
+      # 없으면 `docker compose down && up`(컨테이너 재생성)할 때마다 업로드한
+      # 파일이 다 날아감. 볼륨을 통째로 지우면(-v) 그때는 여전히 사라짐 — 그건
+      # 로컬 디스크 저장 방식 자체의 한계라 감안하고 쓰는 것.
+      - uploads_data:/app/uploads
     depends_on:
       db:
         condition: service_healthy
@@ -43,3 +49,4 @@ services:
 
 volumes:
   db_data:
+  uploads_data:

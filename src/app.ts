@@ -1,4 +1,5 @@
-import express, { type Application, type Request, type Response } from "express"; // Express 앱 생성 및 라우트 핸들러 타입
+import path from "node:path"; // 업로드 파일 정적 서빙 경로를 조합하기 위해 사용
+import express, { type Application, type NextFunction, type Request, type Response } from "express"; // Express 앱 생성 및 라우트 핸들러 타입
 import helmet from "helmet"; // 기본적인 보안 관련 HTTP 응답 헤더 설정
 import cors from "cors"; // 다른 오리진(프론트엔드)에서의 요청을 허용하기 위한 CORS 설정
 import cookieParser from "cookie-parser"; // 쿠키에 담긴 JWT 등을 req.cookies로 파싱
@@ -27,6 +28,19 @@ export function createApp(): Application {
   app.get("/health", (_req: Request, res: Response) => {
     res.status(200).json({ status: "ok" });
   });
+
+  // 업로드된 프로필 이미지 등을 정적으로 서빙 (로컬 디스크 저장 방식).
+  // helmet의 기본 Cross-Origin-Resource-Policy가 "same-origin"이라, 프론트엔드
+  // (CORS_ORIGIN, 다른 포트)에서 <img src="...">로 이 파일을 불러오면 브라우저가
+  // 차단함 — 이 경로에서만 cross-origin으로 허용하도록 헤더를 덮어씀.
+  app.use(
+    "/uploads",
+    (_req: Request, res: Response, next: NextFunction) => {
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+      next();
+    },
+    express.static(path.join(process.cwd(), "uploads")),
+  );
 
   // Base URL: /api (API 명세서 상단 명시)
   app.use("/api/auth", authRouter);
