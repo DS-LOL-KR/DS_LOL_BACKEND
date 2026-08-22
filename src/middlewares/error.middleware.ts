@@ -18,7 +18,14 @@ export function errorMiddleware(
     return;
   }
 
-  logger.error("Unhandled error", { err });
+  // 그냥 { err }로 넘기면 winston json 포맷이 Error의 message/stack을
+  // (non-enumerable이라) 빼먹고 "{}"로 찍어버려서 디버깅이 불가능했음 —
+  // 직접 꺼내서 남김.
+  const errorInfo =
+    err instanceof  Error
+      ? { message: err.message, stack: err.stack, name: err.name }
+      : { value: err };
+  logger.error("Unhandled error", errorInfo);
 
   res.status(500).json({
     error: {
