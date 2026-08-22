@@ -165,17 +165,23 @@ model UserPositionStat {
 }
 
 // ERD: user_evaluations — 내전 종료 후 상호 평가 (기능명세서 "사용자 평가")
+// match_id는 ERD 원문에 없던 컬럼 (신규, 2026-08-23) — POST /matches/:id/evaluations가
+// 항상 특정 매치 하위에서 호출되는데 이게 없으면 "같은 매치에서 중복 평가" 방지도
+// 안 되고, 매너점수를 게임(gameId)별로 집계할 방법도 없어서 추가함.
 model UserEvaluation {
   id          Int      @id @default(autoincrement())
+  matchId     Int      @map("match_id")
   evaluatorId Int      @map("evaluator_id")
   targetId    Int      @map("target_id")
   score       Int // 1~5
   comment     String?
   createdAt   DateTime @default(now()) @map("created_at")
 
-  evaluator User @relation("EvaluationEvaluator", fields: [evaluatorId], references: [id])
-  target    User @relation("EvaluationTarget", fields: [targetId], references: [id])
+  match     CustomMatch @relation(fields: [matchId], references: [id])
+  evaluator User        @relation("EvaluationEvaluator", fields: [evaluatorId], references: [id])
+  target    User        @relation("EvaluationTarget", fields: [targetId], references: [id])
 
+  @@unique([matchId, evaluatorId, targetId]) // 같은 매치에서 같은 사람을 두 번 평가 못하게
   @@map("user_evaluations")
 }
 
@@ -242,6 +248,7 @@ model CustomMatch {
   game         Game                     @relation(fields: [gameId], references: [id])
   creator      User                     @relation("MatchCreatedBy", fields: [createdBy], references: [id])
   participants CustomMatchParticipant[]
+  evaluations  UserEvaluation[]
 
   @@map("custom_matches")
 }
