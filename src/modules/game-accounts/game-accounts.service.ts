@@ -91,19 +91,19 @@ export async function deleteGameAccount(userId: number, gameAccountId: number): 
   ]);
 }
 
-// 기능명세서: "전적 자동 갱신" — "사용자가 직접 갱신할 수 있게 버튼 하나 만들 계획"
-// API 명세서: POST /game-accounts/:id/refresh
+// 실제 갱신 로직 (소유권 체크 없이) — API 경로(refreshGameAccountStats)와
+// 배치 잡(refreshAllLinkedGameAccounts) 양쪽에서 공유해서 씀.
 // 솔로랭크 티어(League-V4) + 소환사 레벨/아이콘(Summoner-V4) + 챔피언 숙련도
 // (Champion-Mastery-V4)까지 한 번에 갱신. internal_mmr, user_position_stats(라인별
 // 전적)는 여기서 안 건드림 — 그건 match-history/sync 쪽에서 실제 매치 기록을 기반으로
 // 계산함(라이엇이 "라인별 승률"을 직접 안 줌).
-export async function refreshGameAccountStats(userId: number, gameAccountId: number) {
-  const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
+async function performRefresh(gameAccount: { id: number; puuid: string }) {
+  const gameAccountId = gameAccount.id;
 
   const [entries, summoner, masteries] = await Promise.all([
-    fetchLeagueEntriesByPuuid(account.puuid),
-    fetchSummonerByPuuid(account.puuid),
-    fetchChampionMasteriesByPuuid(account.puuid),
+    fetchLeagueEntriesByPuuid(gameAccount.puuid),
+    fetchSummonerByPuuid(gameAccount.puuid),
+    fetchChampionMasteriesByPuuid(gameAccount.puuid),
   ]);
 
   const soloQueue = entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");
@@ -147,6 +147,45 @@ export async function refreshGameAccountStats(userId: number, gameAccountId: num
   ]);
 
   return stats;
+}
+
+// 기능명세서: "전적 자동 갱신" — "사용자가 직접 갱신할 수 있게 버튼 하나 만들 계획"
+// API 명세서: POST /game-accounts/:id/refresh (수동 버튼 쪽)
+export async function refreshGameAccountStats(userId: number, gameAccountId: number) {
+  const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
+  return performRefresh(account);
+}
+
+// 기능명세서: "전적 자동 갱신" — "자동으로 전적 갱신을 하는데..." (자동 버전)
+// src/jobs/syncGameAccountStats.job.ts에서 매일 호출. 유저 컨텍스트가 없는
+// 배치 작업이라 소유권 체크 없이 LOL 계정 전체를 순회함. 계정 하나가 실패해도
+// (라이엇 API 에러 등) 나머지는 계속 진행하고, 실패 내역을 모아서 반환함.
+export async function refreshAllLinkedGameAccounts(): Promise<{
+  total: number;
+  succeeded: number;
+  failed: number;
+  errors: Array<{ gameAccountId: number; message: string }>;
+}> {
+  const accounts = await prisma.gameAccount.findMany({ where: { game: { code: "LOL" } } });
+  const errors: Array<{ gameAccountId: number; message: string }> = [];
+  let succeeded = 0;
+
+  for (const account of accounts) {
+    try {
+      await performRefresh(account);
+      succeeded += 1;
+    } catch (err) {
+      errors.push({
+        gameAccountId: account.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    // 계정 하나당 API 호출 3개(League/Summoner/Mastery)씩 나가므로, Development
+    // Key rate limit(초당 20건, 2분당 100건)을 피하려고 계정 사이에 지연을 둠.
+    await sleep(300);
+  }
+
+  return { total: accounts.length, succeeded, failed: errors.length, errors };
 }
 
 // 기능명세서: "라인별 티어선정"의 재료 데이터 — 실제 매치 기록을 라이엇 Match-V5에서

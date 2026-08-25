@@ -14,7 +14,7 @@ function parseId(raw: string, next: NextFunction): number | null {
 // POST /groups/:id/matches
 export async function createMatch(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const groupId = parseId(req.params.id, next);
+    const groupId = parseId(req.params.id, next); // URL에 입력된 값이 들어옴(params가)
     if (groupId === null) return;
 
     const match = await matchesService.createMatch(groupId, req.user!.id, req.body);
