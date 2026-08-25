@@ -73,6 +73,9 @@ export async function getMatchById(matchId: number) {
 
 // 그룹의 게임 종목 기준으로 이 유저의 mmr/선호 포지션을 조회.
 // 연결된 계정이 없으면 기본값(mmr 1000, 포지션 없음)으로 취급.
+// mmr은 "라인별 MMR"(user_position_stats.position_mmr)을 우선 사용 — 선호 라인이
+// 없으면(매치 동기화 이력 없음) 계정 전체 internal_mmr로 대체함. position_mmr은
+// game-accounts.service.ts의 recomputePositionStats()에서 계산됨(2026-08-25 도입).
 async function resolveParticipantStats(userId: number, gameId: number): Promise<TeamBalancerParticipant> {
   const gameAccount = await prisma.gameAccount.findUnique({
     where: { userId_gameId: { userId, gameId } },
@@ -87,7 +90,7 @@ async function resolveParticipantStats(userId: number, gameId: number): Promise<
 
   return {
     userId,
-    mmr: gameAccount.stats?.internalMmr ?? 1000,
+    mmr: topPosition?.positionMmr ?? gameAccount.stats?.internalMmr ?? 1000,
     preferredPosition: topPosition?.position ?? null,
   };
 }

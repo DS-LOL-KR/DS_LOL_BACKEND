@@ -269,12 +269,29 @@ export async function syncMatchHistory(
   };
 }
 
-// match_history_participants를 포지션별로 묶어서 games_played/win_rate를 다시 계산.
-// 지금은 큐 종류(랭크/일반/칼바람) 구분 없이 전부 합산 — 필요하면 나중에 필터 추가.
+// user_position_stats.position_mmr을 실제로 계산하는 공식 (2026-08-25 도입 —
+// 그 전까진 스키마에만 있고 아무도 안 채워서 항상 기본값 1000이었음).
+// 전체 internal_mmr을 기준선으로 삼고, 그 라인의 승률이 50%보다 높으면 올리고
+// 낮으면 내림. 표본이 적을 때(예: 2게임 100% 승률) 과하게 반영되지 않도록
+// 게임 수 기준 신뢰도 계수를 곱함 — POSITION_MMR_FULL_CONFIDENCE_GAMES판
+// 이상이어야 보정폭(POSITION_MMR_SWING)을 100% 반영.
+const POSITION_MMR_SWING = 200;
+const POSITION_MMR_FULL_CONFIDENCE_GAMES = 20;
+
+function calculatePositionMmr(baselineMmr: number, winRate: number, gamesPlayed: number): number {
+  const confidence = Math.min(gamesPlayed / POSITION_MMR_FULL_CONFIDENCE_GAMES, 1);
+  return Math.round(baselineMmr + (winRate - 0.5) * POSITION_MMR_SWING * confidence);
+}
+
+// match_history_participants를 포지션별로 묶어서 games_played/win_rate/position_mmr을
+// 다시 계산. 지금은 큐 종류(랭크/일반/칼바람) 구분 없이 전부 합산 — 필요하면 나중에 필터 추가.
 async function recomputePositionStats(gameAccountId: number) {
-  const participants = await prisma.matchHistoryParticipant.findMany({
-    where: { gameAccountId, position: { not: null } },
-  });
+  const [participants, gameAccount] = await Promise.all([
+    prisma.matchHistoryParticipant.findMany({ where: { gameAccountId, position: { not: null } } }),
+    prisma.gameAccount.findUnique({ where: { id: gameAccountId }, include: { stats: true } }),
+  ]);
+
+  const baselineMmr = gameAccount?.stats?.internalMmr ?? 1000;
 
   const grouped = new Map<string, { games: number; wins: number }>();
   for (const p of participants) {
@@ -287,10 +304,13 @@ async function recomputePositionStats(gameAccountId: number) {
 
   const results = [];
   for (const [position, { games, wins }] of grouped) {
+    const winRate = wins / games;
+    const positionMmr = calculatePositionMmr(baselineMmr, winRate, games);
+
     const stat = await prisma.userPositionStat.upsert({
       where: { gameAccountId_position: { gameAccountId, position } },
-      update: { gamesPlayed: games, winRate: wins / games },
-      create: { gameAccountId, position, gamesPlayed: games, winRate: wins / games },
+      update: { gamesPlayed: games, winRate, positionMmr },
+      create: { gameAccountId, position, gamesPlayed: games, winRate, positionMmr },
     });
     results.push(stat);
   }
