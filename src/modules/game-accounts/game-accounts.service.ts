@@ -10,6 +10,7 @@ import {
   fetchSummonerByPuuid,
   resolveQueueType,
 } from "./riot.client"; // 실제 라이엇 API 호출
+import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
 import type {
   CreateGameAccountInput,
   ListMatchHistoryQuery,
@@ -347,12 +348,15 @@ export async function listMatchHistory(gameAccountId: number, query: ListMatchHi
     take: query.limit,
   });
 
+  const championNames = await getChampionNameMap();
+
   return participants.map((p) => ({
     matchId: p.match.riotMatchId,
     queueType: p.match.queueType,
     playedAt: p.match.playedAt,
     durationSeconds: p.match.durationSeconds,
     championId: p.championId,
+    championName: championNames.get(p.championId) ?? null,
     position: p.position,
     kills: p.kills,
     deaths: p.deaths,
@@ -372,11 +376,17 @@ export async function listChampionMasteries(gameAccountId: number, limit: number
     throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
   }
 
-  return prisma.championMastery.findMany({
+  const masteries = await prisma.championMastery.findMany({
     where: { gameAccountId },
     orderBy: { masteryPoints: "desc" },
     take: limit,
   });
+
+  const championNames = await getChampionNameMap();
+  return masteries.map((m) => ({
+    ...m,
+    championName: championNames.get(m.championId) ?? null,
+  }));
 }
 
 // API 명세서: GET /game-accounts/:id/champion-stats
@@ -402,9 +412,12 @@ export async function getChampionStats(gameAccountId: number) {
     grouped.set(p.championId, entry);
   }
 
+  const championNames = await getChampionNameMap();
+
   return Array.from(grouped.entries())
     .map(([championId, { games, wins }]) => ({
       championId,
+      championName: championNames.get(championId) ?? null,
       gamesPlayed: games,
       wins,
       losses: games - wins,
