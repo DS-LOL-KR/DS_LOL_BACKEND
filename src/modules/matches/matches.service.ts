@@ -1,6 +1,8 @@
 import { prisma } from "../../config/prisma"; // custom_matches, custom_match_participants 등 테이블 접근
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
+import { logger } from "../../lib/logger"; // 자동 판정 배치 잡의 계정별 실패를 남기기 위해 사용
 import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalancer"; // 실제 팀 배정 알고리즘
+import { performMatchHistorySync } from "../game-accounts/game-accounts.service"; // 자동 판정 전 참가자 전적을 동기화하기 위해 사용
 // 아래 각 요청의 바디 형태를 명시하기 위해 사용 (평가 생성 / 내전 생성 / 내전 종료 /
 // 팀 자동 구성 / 팀 수동 조정)
 import type {
@@ -416,6 +418,126 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
   });
 
   return buildMatchDetail(finishedMatch);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+interface LinkedParticipant {
+  userId: number;
+  assignedTeam: "TEAM_A" | "TEAM_B" | null;
+  account: { id: number; gameId: number; puuid: string };
+}
+
+// 기능명세서 요청: "승패를 사람이 직접 고르는 게 아니라, 내전이 만들어지고 나면
+// 라이엇에서 동기화된 실제 전적으로 자동으로 판정되게" — MATCHED 상태인 내전을
+// 5분마다(스케줄은 jobs/autoFinishMatches.job.ts) 훑어서, 배정된 팀 그대로 실제로
+// 같이 게임을 뛴 흔적이 있으면 자동으로 종료 처리함. 매치를 못 찾으면 다음 주기에
+// 다시 시도할 뿐 실패로 취급하지 않음 — 수동 "팀 A/B 승리" 버튼은 항상 남아있어서
+// 계정 미연동/동기화 지연 등으로 자동 판정이 안 되는 경우에도 직접 처리할 수 있음.
+export async function attemptAutoFinishMatches(): Promise<{
+  checked: number;
+  finished: number;
+  errors: Array<{ matchId: number; message: string }>;
+}> {
+  const matches = await prisma.customMatch.findMany({
+    where: { status: "MATCHED" },
+    include: { participants: true },
+  });
+
+  let finished = 0;
+  const errors: Array<{ matchId: number; message: string }> = [];
+
+  for (const match of matches) {
+    try {
+      const didFinish = await tryAutoFinishMatch(match);
+      if (didFinish) finished += 1;
+    } catch (err) {
+      errors.push({ matchId: match.id, message: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  return { checked: matches.length, finished, errors };
+}
+
+async function tryAutoFinishMatch(
+  match: Awaited<ReturnType<typeof findMatchOrThrow>>,
+): Promise<boolean> {
+  const linkedParticipants: LinkedParticipant[] = (
+    await Promise.all(
+      match.participants.map(async (p) => {
+        const account = await prisma.gameAccount.findUnique({
+          where: { userId_gameId: { userId: p.userId, gameId: match.gameId } },
+          select: { id: true, gameId: true, puuid: true },
+        });
+        if (!account) return [];
+        return [{ userId: p.userId, assignedTeam: p.assignedTeam, account } as LinkedParticipant];
+      }),
+    )
+  ).flat();
+
+  // 연동된 계정이 2명 미만이면 어느 팀이 실제로 이겼는지 대조할 방법이 없음.
+  if (linkedParticipants.length < 2) return false;
+
+  for (const { account } of linkedParticipants) {
+    try {
+      await performMatchHistorySync(account, 5);
+    } catch (err) {
+      logger.error("Auto-finish: match history sync failed", {
+        matchId: match.id,
+        gameAccountId: account.id,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    }
+    await sleep(300); // Riot Development Key rate limit(초당 20건) 여유
+  }
+
+  const gameAccountIds = linkedParticipants.map((p) => p.account.id);
+  const recentParticipations = await prisma.matchHistoryParticipant.findMany({
+    where: {
+      gameAccountId: { in: gameAccountIds },
+      match: { playedAt: { gte: match.createdAt } },
+    },
+    include: { match: true },
+  });
+
+  const byRiotMatch = new Map<string, typeof recentParticipations>();
+  for (const row of recentParticipations) {
+    const list = byRiotMatch.get(row.match.riotMatchId) ?? [];
+    list.push(row);
+    byRiotMatch.set(row.match.riotMatchId, list);
+  }
+
+  const participantByAccountId = new Map(linkedParticipants.map((p) => [p.account.id, p]));
+
+  for (const rows of byRiotMatch.values()) {
+    // 연동된 걸 확인한 참가자 전원이 이 실제 매치 안에 다 같이 있어야만 "이
+    // 내전이 곧 이 실제 게임이다"라고 확신함 — 일부만 겹치면 오판 위험이 큼.
+    if (rows.length < linkedParticipants.length) continue;
+
+    const teamAWins = new Set<boolean>();
+    const teamBWins = new Set<boolean>();
+    for (const row of rows) {
+      const participant = participantByAccountId.get(row.gameAccountId);
+      if (!participant) continue;
+      if (participant.assignedTeam === "TEAM_A") teamAWins.add(row.win);
+      else if (participant.assignedTeam === "TEAM_B") teamBWins.add(row.win);
+    }
+
+    // 같은 내부 팀끼리는 실제 결과(win)가 전부 같아야 하고, 두 팀은 서로 달라야
+    // 이 실제 매치가 우리가 배정한 팀과 정말 일치한다고 볼 수 있음. 아니면 이
+    // 실제 매치는 이 내전과 무관한(예: 같은 날 따로 한) 게임일 가능성이 커서 건너뜀.
+    if (teamAWins.size !== 1 || teamBWins.size !== 1) continue;
+    const [teamAWon] = teamAWins;
+    const [teamBWon] = teamBWins;
+    if (teamAWon === teamBWon) continue;
+
+    await finishMatch(match.id, { winningTeam: teamAWon ? "TEAM_A" : "TEAM_B" });
+    return true;
+  }
+
+  return false;
 }
 
 // 대상 유저가 이 게임(gameId)에서 받은 모든 평가의 평균을 user_game_stats.manner_score에 반영.

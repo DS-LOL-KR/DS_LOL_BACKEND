@@ -198,8 +198,17 @@ export async function syncMatchHistory(
   input: SyncMatchHistoryInput,
 ) {
   const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
+  return performMatchHistorySync(account, input.count);
+}
 
-  const matchIds = await fetchMatchIdsByPuuid(account.puuid, input.count);
+// 소유권 체크 없이 실제 동기화만 하는 코어 — API 경로(syncMatchHistory, 위)와
+// 내전 결과 자동 판정 배치 잡(matches 모듈) 양쪽에서 공유해서 씀.
+export async function performMatchHistorySync(
+  account: { id: number; gameId: number; puuid: string },
+  count: number,
+) {
+  const gameAccountId = account.id;
+  const matchIds = await fetchMatchIdsByPuuid(account.puuid, count);
 
   // "이미 동기화됨"은 반드시 이 game_account 기준이어야 함 — match_histories는
   // 여러 계정이 공유하는 전역 테이블이라, 다른 계정이 먼저 동기화해둔 매치라고
