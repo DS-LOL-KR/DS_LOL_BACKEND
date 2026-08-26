@@ -116,6 +116,7 @@ interface ParticipantDetail {
   matchId: number;
   userId: number;
   nickname: string;
+  profileImageUrl: string | null;
   assignedTeam: "TEAM_A" | "TEAM_B" | null;
   assignedPosition: string | null;
   mmrChange: number;
@@ -133,7 +134,10 @@ async function buildParticipantDetail(
   gameId: number,
 ): Promise<ParticipantDetail> {
   const [user, gameAccount] = await Promise.all([
-    prisma.user.findUnique({ where: { id: participant.userId }, select: { nickname: true } }),
+    prisma.user.findUnique({
+      where: { id: participant.userId },
+      select: { nickname: true, profileImageUrl: true },
+    }),
     prisma.gameAccount.findUnique({
       where: { userId_gameId: { userId: participant.userId, gameId } },
       include: { stats: true, positionStats: true },
@@ -157,6 +161,7 @@ async function buildParticipantDetail(
     matchId: participant.matchId,
     userId: participant.userId,
     nickname: user?.nickname ?? "알 수 없음",
+    profileImageUrl: user?.profileImageUrl ?? null,
     assignedTeam: participant.assignedTeam as "TEAM_A" | "TEAM_B" | null,
     assignedPosition: participant.assignedPosition,
     mmrChange: participant.mmrChange,
