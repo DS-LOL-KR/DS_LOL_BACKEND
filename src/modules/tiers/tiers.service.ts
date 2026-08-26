@@ -47,7 +47,20 @@ function recalculateInternalMmr(
   return Math.round(tierScore * 0.7 + currentInternalMmr * 0.2 + mannerAdjustment * 0.1);
 }
 
-async function buildTierEntries(groupId: number, query: ListTiersQuery) {
+export interface TierEntry {
+  userId: number;
+  nickname: string;
+  profileImageUrl: string | null;
+  position: string;
+  officialTier: string | null;
+  internalMmr: number;
+  positionMmr: number;
+  tier: 1 | 2 | 3 | 4 | 5;
+  wins: number;
+  losses: number;
+}
+
+async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise<TierEntry[]> {
   const group = await prisma.group.findUnique({ where: { id: groupId } });
   if (!group) {
     throw new AppError(404, "그룹을 찾을 수 없습니다.");
@@ -58,7 +71,7 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery) {
     include: { user: { select: { id: true, nickname: true, profileImageUrl: true } } },
   });
 
-  const entries = await Promise.all(
+  const memberInfos = await Promise.all(
     members.map(async (member) => {
       // 그룹의 게임 종목(group.gameId) 기준으로 이 멤버가 연결해둔 계정을 찾음.
       const gameAccount = await prisma.gameAccount.findUnique({
@@ -73,19 +86,43 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery) {
         userId: member.userId,
         nickname: member.user.nickname,
         profileImageUrl: member.user.profileImageUrl,
-        role: member.role,
-        hasLinkedAccount: gameAccount !== null,
         officialTier: gameAccount?.stats?.officialTier ?? null,
-        internalMmr: gameAccount?.stats?.internalMmr ?? null,
-        mannerScore: gameAccount?.stats?.mannerScore ?? null,
+        internalMmr: gameAccount?.stats?.internalMmr ?? 1000,
         positions: gameAccount?.positionStats ?? [],
       };
     }),
   );
 
-  // position 필터가 있으면, 그 라인 기록이 없는 멤버는 결과에서 제외.
-  if (query.position) {
-    return entries.filter((entry) => entry.positions.length > 0);
+  // internal_mmr 내림차순 순위를 상위 20%씩 5개 구간(1~5티어)으로 나눔.
+  // position 쿼리 필터와 무관하게 그룹 전체 순위로 계산해서, 라인 탭을 바꿔도
+  // 같은 사람의 티어 숫자가 흔들리지 않게 함.
+  const ranked = [...memberInfos].sort((a, b) => b.internalMmr - a.internalMmr);
+  const tierByUserId = new Map<number, 1 | 2 | 3 | 4 | 5>();
+  ranked.forEach((member, index) => {
+    const percentile = index / ranked.length;
+    const tier = (Math.min(4, Math.floor(percentile * 5)) + 1) as 1 | 2 | 3 | 4 | 5;
+    tierByUserId.set(member.userId, tier);
+  });
+
+  // 라인 기록(user_position_stats)이 있는 라인마다 한 줄씩 펼쳐서 반환.
+  // 계정 미연동이거나 해당 라인 기록이 없는 멤버는 그 라인에 줄이 생기지 않음.
+  const entries: TierEntry[] = [];
+  for (const member of memberInfos) {
+    for (const positionStat of member.positions) {
+      const wins = Math.round(positionStat.gamesPlayed * positionStat.winRate);
+      entries.push({
+        userId: member.userId,
+        nickname: member.nickname,
+        profileImageUrl: member.profileImageUrl,
+        position: positionStat.position,
+        officialTier: member.officialTier,
+        internalMmr: member.internalMmr,
+        positionMmr: positionStat.positionMmr,
+        tier: tierByUserId.get(member.userId) ?? 5,
+        wins,
+        losses: positionStat.gamesPlayed - wins,
+      });
+    }
   }
 
   return entries;
