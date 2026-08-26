@@ -283,6 +283,19 @@ function calculatePositionMmr(baselineMmr: number, winRate: number, gamesPlayed:
   return Math.round(baselineMmr + (winRate - 0.5) * POSITION_MMR_SWING * confidence);
 }
 
+// match_history_participants.position은 라이엇 원본 값(TOP/JUNGLE/MIDDLE/BOTTOM/
+// UTILITY)인데, 그룹 티어 필터(GET /groups/:id/tiers?position=)나 내전 팀 배정
+// (assignedPosition)은 전부 우리 내부 약어(TOP/JUG/MID/ADC/SUP)를 씀 — 매핑 없이
+// 그대로 저장하면 "JUNGLE"이 "JUG"랑 절대 안 맞아서 라인 필터/선호 라인 배정이
+// 전부 조용히 실패함(실제로 이 상태로 있었음, 2026-08-25 발견).
+const RIOT_TO_INTERNAL_POSITION: Record<string, string> = {
+  TOP: "TOP",
+  JUNGLE: "JUG",
+  MIDDLE: "MID",
+  BOTTOM: "ADC",
+  UTILITY: "SUP",
+};
+
 // match_history_participants를 포지션별로 묶어서 games_played/win_rate/position_mmr을
 // 다시 계산. 지금은 큐 종류(랭크/일반/칼바람) 구분 없이 전부 합산 — 필요하면 나중에 필터 추가.
 async function recomputePositionStats(gameAccountId: number) {
@@ -295,7 +308,9 @@ async function recomputePositionStats(gameAccountId: number) {
 
   const grouped = new Map<string, { games: number; wins: number }>();
   for (const p of participants) {
-    const key = p.position as string;
+    const key = RIOT_TO_INTERNAL_POSITION[p.position as string];
+    if (!key) continue; // 알 수 없는 포지션 값(방어적 처리) — 집계에서 제외
+
     const entry = grouped.get(key) ?? { games: 0, wins: 0 };
     entry.games += 1;
     if (p.win) entry.wins += 1;
