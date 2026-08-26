@@ -68,7 +68,7 @@ export async function listMatchesForGroup(groupId: number) {
 
 // API 명세서: GET /matches/:id
 export async function getMatchById(matchId: number) {
-  return findMatchOrThrow(matchId);
+  return buildMatchDetail(await findMatchOrThrow(matchId));
 }
 
 // 그룹의 게임 종목 기준으로 이 유저의 mmr/선호 포지션을 조회.
@@ -92,6 +92,168 @@ async function resolveParticipantStats(userId: number, gameId: number): Promise<
     userId,
     mmr: topPosition?.positionMmr ?? gameAccount.stats?.internalMmr ?? 1000,
     preferredPosition: topPosition?.position ?? null,
+  };
+}
+
+// 라이엇이 정식 랭크 점수(LP)를 안 주는 것처럼 우리도 별도 랭크 점수가 없어서,
+// 간단한 Elo 방식으로 기대 승률/mmr 변동폭을 계산함. 팀 평균 mmr 차이가 클수록
+// 기대 승률이 한쪽으로 쏠림.
+function calculateExpectedWinRate(ownAvgMmr: number, opponentAvgMmr: number): number {
+  return 1 / (1 + 10 ** ((opponentAvgMmr - ownAvgMmr) / 400));
+}
+
+type MatchParticipantRow = {
+  id: number;
+  matchId: number;
+  userId: number;
+  assignedTeam: string | null;
+  assignedPosition: string | null;
+  mmrChange: number;
+};
+
+interface ParticipantDetail {
+  id: number;
+  matchId: number;
+  userId: number;
+  nickname: string;
+  assignedTeam: "TEAM_A" | "TEAM_B" | null;
+  assignedPosition: string | null;
+  mmrChange: number;
+  tier: string | null;
+  mmr: number;
+  hasLinkedAccount: boolean;
+  preferredPosition: string | null;
+}
+
+// GET /matches/:id, teams/generate, teams(PATCH), finish 응답에 프론트가 바로 쓸 수
+// 있는 닉네임/티어/MMR을 붙임 — 지금까지 이 값들이 응답에 전혀 없어서 프론트가
+// mock으로 채워야 했던 부분.
+async function buildParticipantDetail(
+  participant: MatchParticipantRow,
+  gameId: number,
+): Promise<ParticipantDetail> {
+  const [user, gameAccount] = await Promise.all([
+    prisma.user.findUnique({ where: { id: participant.userId }, select: { nickname: true } }),
+    prisma.gameAccount.findUnique({
+      where: { userId_gameId: { userId: participant.userId, gameId } },
+      include: { stats: true, positionStats: true },
+    }),
+  ]);
+
+  const topPosition = gameAccount
+    ? [...gameAccount.positionStats].sort((a, b) => b.gamesPlayed - a.gamesPlayed)[0]
+    : undefined;
+  const assignedPositionStat = gameAccount?.positionStats.find(
+    (p) => p.position === participant.assignedPosition,
+  );
+
+  // 실제로 배정된 라인의 MMR을 우선 쓰고, 그 라인 기록이 없으면 가장 많이 한
+  // 라인 MMR, 그것도 없으면 전체 internal_mmr로 폴백.
+  const mmr =
+    assignedPositionStat?.positionMmr ?? topPosition?.positionMmr ?? gameAccount?.stats?.internalMmr ?? 1000;
+
+  return {
+    id: participant.id,
+    matchId: participant.matchId,
+    userId: participant.userId,
+    nickname: user?.nickname ?? "알 수 없음",
+    assignedTeam: participant.assignedTeam as "TEAM_A" | "TEAM_B" | null,
+    assignedPosition: participant.assignedPosition,
+    mmrChange: participant.mmrChange,
+    tier: gameAccount?.stats?.officialTier ?? null,
+    mmr,
+    hasLinkedAccount: gameAccount !== null,
+    preferredPosition: topPosition?.position ?? null,
+  };
+}
+
+interface TeamSummary {
+  totalMmr: number;
+  averageMmr: number;
+  expectedWinRate: number;
+}
+
+interface TeamAnalysis {
+  teamA: TeamSummary;
+  teamB: TeamSummary;
+  balancePercent: number;
+  reasoning: string[];
+}
+
+// 팀 밸런스%/예상 승률/구성 근거 — 새 컬럼을 저장하는 게 아니라, 지금 배정 상태를
+// 그때그때 분석해서 만듦. 그래서 PATCH로 수동 조정해도 다음 조회 때 항상 현재
+// 상태 기준으로 다시 계산되고, teams/generate 당시 로그랑 어긋날 일이 없음.
+function buildTeamAnalysis(participants: ParticipantDetail[]): TeamAnalysis | null {
+  const teamA = participants.filter((p) => p.assignedTeam === "TEAM_A");
+  const teamB = participants.filter((p) => p.assignedTeam === "TEAM_B");
+
+  if (teamA.length === 0 || teamB.length === 0) {
+    return null; // 아직 팀이 안 나뉜 상태(WAITING)면 분석할 게 없음
+  }
+
+  const sumMmr = (list: ParticipantDetail[]) => list.reduce((acc, p) => acc + p.mmr, 0);
+  const totalA = sumMmr(teamA);
+  const totalB = sumMmr(teamB);
+  const avgA = totalA / teamA.length;
+  const avgB = totalB / teamB.length;
+  const balancePercent =
+    Math.round((Math.min(totalA, totalB) / Math.max(totalA, totalB)) * 1000) / 10;
+
+  const reasoning: string[] = [
+    `TEAM_A 합계 ${totalA} vs TEAM_B 합계 ${totalB} (차이 ${Math.abs(totalA - totalB)}, 밸런스 ${balancePercent}%)`,
+  ];
+
+  for (const [teamName, team] of [
+    ["TEAM_A", teamA],
+    ["TEAM_B", teamB],
+  ] as const) {
+    const positionCounts = new Map<string, number>();
+    for (const p of team) {
+      if (!p.assignedPosition) continue;
+      positionCounts.set(p.assignedPosition, (positionCounts.get(p.assignedPosition) ?? 0) + 1);
+    }
+    for (const [position, count] of positionCounts) {
+      if (count > 1) {
+        reasoning.push(`${teamName}에 ${position} 포지션이 ${count}명 있습니다 (라인 중복).`);
+      }
+    }
+  }
+
+  for (const p of participants) {
+    if (!p.hasLinkedAccount) {
+      reasoning.push(`${p.nickname}님은 연동된 게임 계정이 없어 기본 MMR(1000)로 계산됐습니다.`);
+    } else if (p.preferredPosition && p.assignedPosition && p.preferredPosition !== p.assignedPosition) {
+      reasoning.push(
+        `${p.nickname}님은 주로 하는 라인(${p.preferredPosition})이 아닌 ${p.assignedPosition}로 배정됐습니다.`,
+      );
+    }
+  }
+
+  return {
+    teamA: {
+      totalMmr: totalA,
+      averageMmr: Math.round(avgA),
+      expectedWinRate: Math.round(calculateExpectedWinRate(avgA, avgB) * 1000) / 1000,
+    },
+    teamB: {
+      totalMmr: totalB,
+      averageMmr: Math.round(avgB),
+      expectedWinRate: Math.round(calculateExpectedWinRate(avgB, avgA) * 1000) / 1000,
+    },
+    balancePercent,
+    reasoning,
+  };
+}
+
+async function buildMatchDetail(match: Awaited<ReturnType<typeof findMatchOrThrow>>) {
+  const participants = await Promise.all(
+    match.participants.map((p) => buildParticipantDetail(p, match.gameId)),
+  );
+
+  return {
+    ...match,
+    participants,
+    teamAnalysis: buildTeamAnalysis(participants),
   };
 }
 
@@ -127,7 +289,7 @@ export async function generateTeams(matchId: number, input: GenerateTeamsInput) 
     prisma.customMatch.update({ where: { id: matchId }, data: { status: "MATCHED" } }),
   ]);
 
-  return findMatchOrThrow(matchId);
+  return buildMatchDetail(await findMatchOrThrow(matchId));
 }
 
 // 기능명세서: "팀 구성 재추첨/수동 조정" — "팀이 맘에 안 들면 변경 가능"
@@ -163,16 +325,15 @@ export async function updateTeams(matchId: number, input: UpdateTeamsInput) {
     ),
   );
 
-  return findMatchOrThrow(matchId);
+  return buildMatchDetail(await findMatchOrThrow(matchId));
 }
 
-// 라이엇이 정식 랭크 점수(LP)를 안 주는 것처럼 우리도 별도 랭크 점수가 없어서,
-// 간단한 Elo 방식으로 승패에 따른 mmr 변동폭을 계산함. 팀 평균 mmr 차이가 클수록
-// (이변일수록) 변동폭이 커짐 — K=32는 체스 Elo에서 흔히 쓰는 값을 그대로 사용.
+// 이변일수록(팀 평균 mmr 차이가 클수록) 변동폭이 커짐 — K=32는 체스 Elo에서
+// 흔히 쓰는 값을 그대로 사용. 기대 승률 자체는 calculateExpectedWinRate() 재사용.
 const ELO_K_FACTOR = 32;
 
 function calculateMmrChange(ownTeamAvgMmr: number, opponentTeamAvgMmr: number, won: boolean): number {
-  const expectedScore = 1 / (1 + 10 ** ((opponentTeamAvgMmr - ownTeamAvgMmr) / 400));
+  const expectedScore = calculateExpectedWinRate(ownTeamAvgMmr, opponentTeamAvgMmr);
   const actualScore = won ? 1 : 0;
   return Math.round(ELO_K_FACTOR * (actualScore - expectedScore));
 }
@@ -243,11 +404,13 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
     }),
   );
 
-  return prisma.customMatch.update({
+  const finishedMatch = await prisma.customMatch.update({
     where: { id: matchId },
     data: { status: "FINISHED", winningTeam: input.winningTeam },
     include: { participants: true },
   });
+
+  return buildMatchDetail(finishedMatch);
 }
 
 // 대상 유저가 이 게임(gameId)에서 받은 모든 평가의 평균을 user_game_stats.manner_score에 반영.
