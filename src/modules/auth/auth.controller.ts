@@ -11,6 +11,20 @@ const AUTH_COOKIE_NAME = "token";
 // TODO: JWT_EXPIRES_IN을 바꾸면 이 값도 같이 맞춰줘야 함 — 지금은 수동 동기화.
 const AUTH_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
+// 프론트/백엔드가 서로 다른 도메인(예: Vercel + ngrok)이면 쿠키 관점에서
+// cross-site라, SameSite=None + Secure가 아니면 브라우저가 로그인 직후
+// /api/users/me 같은 fetch 요청에 쿠키를 안 실어 보내서 계속 401이 남
+// (localhost 프록시로 같은 origin처럼 보이는 로컬 개발 환경만 lax로 충분).
+// set/clearCookie 양쪽에서 옵션이 어긋나면 로그아웃 시 쿠키가 실제로는 안
+// 지워지는 문제가 생겨서, 옵션을 여기 한 곳에서만 정의해 공유함.
+function getAuthCookieOptions() {
+  return {
+    httpOnly: true, // JS에서 document.cookie로 못 읽게 — XSS로 토큰 탈취 방지
+    secure: env.NODE_ENV === "production" || env.isCrossSiteDeployment,
+    sameSite: (env.isCrossSiteDeployment ? "none" : "lax") as "none" | "lax",
+  };
+}
+
 // GET /auth/google
 export async function googleAuth(_req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -33,9 +47,7 @@ export async function googleCallback(req: Request, res: Response, next: NextFunc
     const { token } = await authService.handleGoogleCallback(parsed.data);
 
     res.cookie(AUTH_COOKIE_NAME, token, {
-      httpOnly: true, // JS에서 document.cookie로 못 읽게 — XSS로 토큰 탈취 방지
-      secure: env.NODE_ENV === "production", // 로컬(http)에서는 꺼야 브라우저가 쿠키를 버리지 않음
-      sameSite: "lax",
+      ...getAuthCookieOptions(),
       maxAge: AUTH_COOKIE_MAX_AGE_MS,
     });
 
@@ -51,6 +63,6 @@ export async function googleCallback(req: Request, res: Response, next: NextFunc
 // 서버가 상태를 갖지 않는(stateless) JWT라 서버 쪽에서 따로 무효화할 게 없음 —
 // 클라이언트에 심어둔 쿠키를 지우는 것만으로 로그아웃 처리가 끝남.
 export async function logout(_req: Request, res: Response): Promise<void> {
-  res.clearCookie(AUTH_COOKIE_NAME);
+  res.clearCookie(AUTH_COOKIE_NAME, getAuthCookieOptions());
   res.status(204).send();
 }

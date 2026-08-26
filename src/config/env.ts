@@ -22,10 +22,22 @@ const envSchema = z.object({
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
 });
 
-export type Env = z.infer<typeof envSchema>;
+export type Env = z.infer<typeof envSchema> & {
+  // 프론트(Vercel)와 백엔드(ngrok)가 서로 다른 도메인으로 배포된 경우처럼, 쿠키
+  // 관점에서 "cross-site"인 배포인지. localhost가 아니면 전부 cross-site로 취급 —
+  // 이 경우 인증 쿠키는 SameSite=None + Secure가 아니면 브라우저가 fetch/XHR
+  // 요청에 아예 안 실어 보내서 로그인 직후에도 계속 401이 남(실제로 이 문제로
+  // 로그인→401→재로그인 무한 루프가 발생했었음, 2026-08-26 발견).
+  isCrossSiteDeployment: boolean;
+};
 
 // TODO: 테스트에서 환경변수를 쉽게 스텁할 수 있도록, 이 값을 나중에 필요할 때
 // 지연 평가(lazy)하는 방식으로 바꾸는 것도 고려해볼 것.
-export const env: Env = envSchema.parse(process.env);
+const parsedEnv = envSchema.parse(process.env);
+
+export const env: Env = {
+  ...parsedEnv,
+  isCrossSiteDeployment: !parsedEnv.CORS_ORIGIN.startsWith("http://localhost"),
+};
 
 export default env;
