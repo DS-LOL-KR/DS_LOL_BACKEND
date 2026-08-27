@@ -24,8 +24,8 @@ export async function listTiers(req: Request, res: Response, next: NextFunction)
       return;
     }
 
-    const tiers = await tiersService.listTiers(id, parsed.data);
-    res.status(200).json({ tiers });
+    const table = await tiersService.listTiers(id, parsed.data);
+    res.status(200).json(table);
   } catch (err) {
     next(err);
   }
@@ -37,8 +37,8 @@ export async function recalculateTiers(req: Request, res: Response, next: NextFu
     const id = parseId(req.params.id, next);
     if (id === null) return;
 
-    const tiers = await tiersService.recalculateTiers(id);
-    res.status(200).json({ tiers });
+    const table = await tiersService.recalculateTiers(id);
+    res.status(200).json(table);
   } catch (err) {
     next(err);
   }

@@ -16,7 +16,15 @@ export interface TierEntry {
   losses: number;
 }
 
-async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise<TierEntry[]> {
+export interface TierTable {
+  tiers: TierEntry[];
+  // 그룹원들의 game_account 통계(내부 MMR·티어) 중 가장 최근에 갱신된 시각 —
+  // 화면에 "n시간 전 갱신"으로 표시하는 값이 예전엔 고정 문구("2시간 전")였어서
+  // 실제 데이터 기준으로 바꿈. 연동된 계정이 하나도 없으면 null.
+  lastUpdatedAt: string | null;
+}
+
+async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise<TierTable> {
   const group = await prisma.group.findUnique({ where: { id: groupId } });
   if (!group) {
     throw new AppError(404, "그룹을 찾을 수 없습니다.");
@@ -45,9 +53,16 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
         officialTier: gameAccount?.stats?.officialTier ?? null,
         internalMmr: gameAccount?.stats?.internalMmr ?? 1000,
         positions: gameAccount?.positionStats ?? [],
+        statsUpdatedAt: gameAccount?.stats?.updatedAt ?? null,
       };
     }),
   );
+
+  const lastUpdatedAt = memberInfos.reduce<Date | null>((latest, member) => {
+    if (!member.statsUpdatedAt) return latest;
+    if (!latest || member.statsUpdatedAt > latest) return member.statsUpdatedAt;
+    return latest;
+  }, null);
 
   // internal_mmr 내림차순 순위를 상위 20%씩 5개 구간(1~5티어)으로 나눔.
   // position 쿼리 필터와 무관하게 그룹 전체 순위로 계산해서, 라인 탭을 바꿔도
@@ -81,7 +96,7 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
     }
   }
 
-  return entries;
+  return { tiers: entries, lastUpdatedAt: lastUpdatedAt?.toISOString() ?? null };
 }
 
 // 기능명세서: "티어표 한눈에 보기" / "라인별 티어선정"
