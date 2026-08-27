@@ -11,6 +11,7 @@ import {
   resolveQueueType,
 } from "./riot.client"; // 실제 라이엇 API 호출
 import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
+import { recalculateInternalMmr } from "../../lib/mmr"; // official_tier 기반 internal_mmr 계산 (tiers.service.ts와 공유)
 import type {
   CreateGameAccountInput,
   ListMatchHistoryQuery,
@@ -95,31 +96,43 @@ export async function deleteGameAccount(userId: number, gameAccountId: number): 
 // 실제 갱신 로직 (소유권 체크 없이) — API 경로(refreshGameAccountStats)와
 // 배치 잡(refreshAllLinkedGameAccounts) 양쪽에서 공유해서 씀.
 // 솔로랭크 티어(League-V4) + 소환사 레벨/아이콘(Summoner-V4) + 챔피언 숙련도
-// (Champion-Mastery-V4)까지 한 번에 갱신. internal_mmr, user_position_stats(라인별
-// 전적)는 여기서 안 건드림 — 그건 match-history/sync 쪽에서 실제 매치 기록을 기반으로
-// 계산함(라이엇이 "라인별 승률"을 직접 안 줌).
+// (Champion-Mastery-V4)까지 한 번에 갱신. user_position_stats(라인별 전적)는 여기서
+// 안 건드림 — 그건 match-history/sync 쪽에서 실제 매치 기록을 기반으로 계산함
+// (라이엇이 "라인별 승률"을 직접 안 줌).
+// internal_mmr은 계정을 처음 연동했을 때부터 라이엇 공식 티어를 반영해야 언랭/아이언과
+// 챌린저가 똑같이 1000으로 시작하는 문제가 없어서, 여기서도 tiers.service.ts의 그룹
+// 재선정과 같은 공식으로 매번 갱신함(2026-08-27 추가 — 그 전엔 group 재선정을 수동으로
+// 눌러야만 반영돼서, 계정을 갓 연동한 사람은 실제 티어와 무관하게 계속 1000으로 보였음).
 async function performRefresh(gameAccount: { id: number; puuid: string }) {
   const gameAccountId = gameAccount.id;
 
-  const [entries, summoner, masteries] = await Promise.all([
+  const [entries, summoner, masteries, existingStats] = await Promise.all([
     fetchLeagueEntriesByPuuid(gameAccount.puuid),
     fetchSummonerByPuuid(gameAccount.puuid),
     fetchChampionMasteriesByPuuid(gameAccount.puuid),
+    prisma.userGameStat.findUnique({ where: { gameAccountId } }),
   ]);
 
   const soloQueue = entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");
   const officialTier = soloQueue ? `${soloQueue.tier} ${soloQueue.rank}` : null;
+  const internalMmr = recalculateInternalMmr(
+    officialTier,
+    existingStats?.internalMmr ?? 1000,
+    existingStats?.mannerScore ?? 3.5,
+  );
 
   const stats = await prisma.userGameStat.upsert({
     where: { gameAccountId },
     update: {
       officialTier,
+      internalMmr,
       summonerLevel: summoner.summonerLevel,
       profileIconId: summoner.profileIconId,
     },
     create: {
       gameAccountId,
       officialTier,
+      internalMmr,
       summonerLevel: summoner.summonerLevel,
       profileIconId: summoner.profileIconId,
     },
