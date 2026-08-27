@@ -36,4 +36,39 @@ export async function requireGroupOwner(req: Request, _res: Response, next: Next
   }
 }
 
+/**
+ * GET /groups/:id, /groups/:id/tiers, /groups/:id/matches 등 "그룹 멤버라면 누구나
+ * 볼 수 있는" 조회에 씀. authMiddleware만으로는 "로그인은 했지만 이 그룹과 무관한
+ * 다른 유저"까지 막지 못해서, 로그인한 아무나 그룹 ID만 알면 남의 그룹 로스터·
+ * 티어표·MMR을 다 볼 수 있는 구멍이 있었음(실제로 다른 계정으로 겪음, 2026-08-27
+ * 발견) — requireGroupOwner와 같은 패턴으로, OWNER든 MEMBER든 멤버이기만 하면 통과.
+ */
+export async function requireGroupMember(req: Request, _res: Response, next: NextFunction): Promise<void> {
+  if (!req.user) {
+    next(new AppError(401, "Unauthorized"));
+    return;
+  }
+
+  const groupId = Number(req.params.id);
+  if (!Number.isInteger(groupId)) {
+    next(new AppError(400, "Invalid group id"));
+    return;
+  }
+
+  try {
+    const membership = await prisma.groupMember.findUnique({
+      where: { groupId_userId: { groupId, userId: req.user.id } },
+    });
+
+    if (!membership) {
+      next(new AppError(403, "그룹 멤버만 볼 수 있습니다."));
+      return;
+    }
+
+    next();
+  } catch (err) {
+    next(err);
+  }
+}
+
 export default requireGroupOwner;
