@@ -503,6 +503,29 @@ async function tryAutoFinishMatch(
     include: { match: true },
   });
 
+  // 내전 팀 배정을 계속 바꾸는 게 아니라 한 번 정해지면 고정이므로, 배정된 팀
+  // 그대로 실제로 같이 게임을 뛸 때까지 계속 확인함(5분마다). 다만 참가자 중
+  // 한 명이라도 이번 내전 생성 이후 가장 최근에 한 실제 게임이 다른 내전
+  // 멤버와 겹치지 않으면(= 내전 멤버가 아닌 다른 게임을 돌리는 중이라는 뜻)
+  // 지금은 판정 타이밍이 아니라고 보고 이번 라운드는 건너뜀 — 완전히 포기하는
+  // 게 아니라 5분 뒤 다음 배치 때 다시 확인해서, 나중에 내전 게임을 하면
+  // 그때 정상적으로 잡힘.
+  const sortedByRecency = [...recentParticipations].sort(
+    (a, b) => b.match.playedAt.getTime() - a.match.playedAt.getTime(),
+  );
+  const latestRiotMatchIdByAccount = new Map<number, string>();
+  for (const row of sortedByRecency) {
+    if (!latestRiotMatchIdByAccount.has(row.gameAccountId)) {
+      latestRiotMatchIdByAccount.set(row.gameAccountId, row.match.riotMatchId);
+    }
+  }
+  if (new Set(latestRiotMatchIdByAccount.values()).size > 1) {
+    logger.info("Auto-finish: skip this round — a participant's latest game wasn't played with the group", {
+      matchId: match.id,
+    });
+    return false;
+  }
+
   const byRiotMatch = new Map<string, typeof recentParticipations>();
   for (const row of recentParticipations) {
     const list = byRiotMatch.get(row.match.riotMatchId) ?? [];
