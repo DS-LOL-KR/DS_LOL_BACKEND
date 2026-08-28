@@ -1,6 +1,5 @@
 import { prisma } from "../../config/prisma"; // groups, group_members, game_accounts 등 테이블 접근
 import { AppError } from "../../lib/AppError"; // 그룹이 없을 때 404를 명확하게 표현하기 위해 사용
-import { recalculateInternalMmr } from "../../lib/mmr"; // official_tier 기반 internal_mmr 계산 (game-accounts.service.ts와 공유)
 import type { ListTiersQuery } from "./tiers.schema"; // GET /groups/:id/tiers 쿼리(position)의 형태를 명시하기 위해 사용
 
 export interface TierEntry {
@@ -50,6 +49,7 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
         userId: member.userId,
         nickname: member.user.nickname,
         profileImageUrl: member.user.profileImageUrl,
+        linked: gameAccount !== null,
         officialTier: gameAccount?.stats?.officialTier ?? null,
         internalMmr: gameAccount?.stats?.internalMmr ?? 1000,
         positions: gameAccount?.positionStats ?? [],
@@ -67,11 +67,23 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
   // internal_mmr 내림차순 순위를 상위 20%씩 5개 구간(1~5티어)으로 나눔.
   // position 쿼리 필터와 무관하게 그룹 전체 순위로 계산해서, 라인 탭을 바꿔도
   // 같은 사람의 티어 숫자가 흔들리지 않게 함.
-  const ranked = [...memberInfos].sort((a, b) => b.internalMmr - a.internalMmr);
+  // 게임 계정을 아예 연동 안 한 멤버는 화면에 줄도 안 생기는데 순위 계산에는
+  // 기본값(1000)으로 끼어서 등급 경계를 은근히 밀어버리는 문제가 있어 제외함
+  // (2026-08-28, 실제 그룹에서 발견).
+  const ranked = memberInfos.filter((m) => m.linked).sort((a, b) => b.internalMmr - a.internalMmr);
   const tierByUserId = new Map<number, 1 | 2 | 3 | 4 | 5>();
   ranked.forEach((member, index) => {
     const percentile = index / ranked.length;
-    const tier = (Math.min(4, Math.floor(percentile * 5)) + 1) as 1 | 2 | 3 | 4 | 5;
+    let tier = (Math.min(4, Math.floor(percentile * 5)) + 1) as 1 | 2 | 3 | 4 | 5;
+
+    // internal_mmr이 바로 위 순위와 완전히 같으면(동점) 정렬 순서(우연한 인덱스)
+    // 때문에 등급이 갈리지 않도록 같은 등급으로 묶음 — 실제로 두 멤버가 같은
+    // internal_mmr인데 한 명만 1티어, 한 명은 2티어로 나오는 문제가 있었음.
+    const prevMember = ranked[index - 1];
+    if (prevMember && prevMember.internalMmr === member.internalMmr) {
+      tier = tierByUserId.get(prevMember.userId) ?? tier;
+    }
+
     tierByUserId.set(member.userId, tier);
   });
 
@@ -106,37 +118,18 @@ export async function listTiers(groupId: number, query: ListTiersQuery) {
 }
 
 // API 명세서: POST /groups/:id/tiers/recalculate
+// internal_mmr 자체는 여기서 다시 계산하지 않음(2026-08-28) — 공식 티어가 바뀌면
+// game-accounts.service.ts(지금 갱신)에서, 매너점수가 바뀌면 matches.service.ts
+// (평가 반영 시점)에서 이미 internal_mmr에 반영해둠. 이 버튼을 누를 때마다 여기서
+// 또 recalculateInternalMmr을 돌리면 아무것도 안 바뀐 상태에서도 값이 계속
+// 움직이는 버그가 있었음(같은 입력을 자기 자신에 60% 가중치로 계속 섞어넣는 구조라
+// 누를 때마다 목표값 쪽으로 조금씩 더 다가감). 그래서 이미 정확한 internal_mmr을
+// 그대로 읽어서 그룹 안 순위/티어 등급표만 다시 만듦.
 export async function recalculateTiers(groupId: number) {
   const group = await prisma.group.findUnique({ where: { id: groupId } });
   if (!group) {
     throw new AppError(404, "그룹을 찾을 수 없습니다.");
   }
-
-  const members = await prisma.groupMember.findMany({ where: { groupId } });
-
-  await Promise.all(
-    members.map(async (member) => {
-      const gameAccount = await prisma.gameAccount.findUnique({
-        where: { userId_gameId: { userId: member.userId, gameId: group.gameId } },
-        include: { stats: true },
-      });
-
-      if (!gameAccount) {
-        return; // 이 게임에 연결된 계정이 없으면 계산할 게 없음 — 건너뜀
-      }
-
-      const currentInternalMmr = gameAccount.stats?.internalMmr ?? 1000;
-      const mannerScore = gameAccount.stats?.mannerScore ?? 3.5;
-      const officialTier = gameAccount.stats?.officialTier ?? null;
-      const newInternalMmr = recalculateInternalMmr(officialTier, currentInternalMmr, mannerScore);
-
-      await prisma.userGameStat.upsert({
-        where: { gameAccountId: gameAccount.id },
-        update: { internalMmr: newInternalMmr },
-        create: { gameAccountId: gameAccount.id, internalMmr: newInternalMmr },
-      });
-    }),
-  );
 
   return buildTierEntries(groupId, {});
 }

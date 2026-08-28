@@ -115,11 +115,16 @@ async function performRefresh(gameAccount: { id: number; puuid: string }) {
 
   const soloQueue = entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");
   const officialTier = soloQueue ? `${soloQueue.tier} ${soloQueue.rank}` : null;
-  const internalMmr = recalculateInternalMmr(
-    officialTier,
-    existingStats?.internalMmr ?? 1000,
-    existingStats?.mannerScore ?? 3.5,
-  );
+  // "지금 갱신"을 연타해도 internal_mmr이 계속 움직이던 버그 수정 (2026-08-28):
+  // recalculateInternalMmr은 현재 internal_mmr을 60% 가중치로 다시 섞어넣는 구조라,
+  // 공식 티어가 실제로 안 바뀌었는데도 매번 호출하면 "목표값" 쪽으로 조금씩 더
+  // 수렴해가는 것처럼 계속 값이 변함. 티어가 실제로 바뀌었을 때(승급/강등)나
+  // 계정을 처음 연동했을 때만 다시 계산하고, 그 외엔 기존 값을 그대로 둠.
+  const officialTierChanged = existingStats && existingStats.officialTier !== officialTier;
+  const internalMmr =
+    existingStats && !officialTierChanged
+      ? existingStats.internalMmr
+      : recalculateInternalMmr(officialTier, existingStats?.internalMmr ?? 1000, existingStats?.mannerScore ?? 3.5);
 
   const stats = await prisma.userGameStat.upsert({
     where: { gameAccountId },
