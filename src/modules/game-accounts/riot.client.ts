@@ -91,6 +91,7 @@ export async function fetchMatchIdsByPuuid(puuid: string, count: number): Promis
 export interface RiotMatchParticipant {
   puuid: string;
   championId: number;
+  teamId: number; // 100 또는 200 — 같은 라인 "상대"를 찾을 때 같은 teamPosition이면서 팀은 달라야 함
   teamPosition: string; // TOP/JUNGLE/MIDDLE/BOTTOM/UTILITY, 일부 모드는 빈 문자열
   kills: number;
   deaths: number;

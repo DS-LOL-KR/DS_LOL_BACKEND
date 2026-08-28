@@ -126,6 +126,12 @@ model MatchHistoryParticipant {
   damageDealt   Int     @map("damage_dealt")
   visionScore   Int     @map("vision_score")
   win           Boolean
+  // (신규, 2026-08-28) 같은 라인 상대(같은 teamPosition, 다른 팀)와 KDA/분당CS/분당
+  // 딜량을 비교해 만든 점수 (-50~50, 0=상대와 동급). 다른 9명(상대 라이너 제외)은
+  // 저장 안 하고 동기화 시점에만 비교해서 이 값만 남김 — 승패만이 아니라 "그 판을
+  // 얼마나 잘했는지"를 position_mmr에 반영하기 위해 추가. 라인전 상대를 못 찾으면
+  // (아람 등 teamPosition 없는 모드, 중복 포지션) null.
+  performanceScore Float? @map("performance_score")
 
   match       MatchHistory @relation(fields: [matchId], references: [id])
   gameAccount GameAccount  @relation(fields: [gameAccountId], references: [id])

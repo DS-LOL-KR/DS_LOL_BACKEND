@@ -9,6 +9,7 @@ import {
   fetchRiotAccountByRiotId,
   fetchSummonerByPuuid,
   resolveQueueType,
+  type RiotMatchParticipant,
 } from "./riot.client"; // 실제 라이엇 API 호출
 import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
 import { recalculateInternalMmr } from "../../lib/mmr"; // official_tier 기반 internal_mmr 계산 (tiers.service.ts와 공유)
@@ -207,6 +208,35 @@ export async function refreshAllLinkedGameAccounts(): Promise<{
   return { total: accounts.length, succeeded, failed: errors.length, errors };
 }
 
+// performanceScore(-50~50) 한 점당 매치 하나에서 internal_mmr에 반영할 양. 0.2면
+// 매치당 최대 ±10 정도만 움직여서, 내전(custom match) Elo 변동폭(K=32, 보통
+// ±20~30)보다는 작게 — 실제 랭크/일반전은 "참고 자료"이고 우리 내전 결과가
+// 더 크게 반영되게 하려는 의도.
+const PERFORMANCE_TO_MMR_FACTOR = 0.2;
+
+// 같은 라인(teamPosition) 상대(다른 팀)와 KDA/분당CS/분당딜량을 비교해 -50~50
+// 점수로 환산. 못 찾으면(아람 등 teamPosition 없음, 중복 포지션) null.
+// 셋 중 하나가 유난히 튀어도 전체가 안 흔들리게 각 비율을 0.5~2.0으로 캡.
+function calculatePerformanceScore(
+  me: RiotMatchParticipant,
+  opponent: RiotMatchParticipant,
+  gameDurationSeconds: number,
+): number {
+  const minutes = Math.max(1, gameDurationSeconds / 60);
+  const kda = (p: RiotMatchParticipant) => (p.kills + p.assists) / Math.max(1, p.deaths);
+  const csPerMin = (p: RiotMatchParticipant) => (p.totalMinionsKilled + p.neutralMinionsKilled) / minutes;
+  const dmgPerMin = (p: RiotMatchParticipant) => p.totalDamageDealtToChampions / minutes;
+
+  const ratio = (mine: number, theirs: number) => Math.min(2, Math.max(0.5, mine / Math.max(1, theirs)));
+
+  const avgRatio =
+    (ratio(kda(me), kda(opponent)) + ratio(csPerMin(me), csPerMin(opponent)) + ratio(dmgPerMin(me), dmgPerMin(opponent))) /
+    3;
+
+  // avgRatio 1.0 = 라인 상대와 동급, 2.0 = 상대의 2배 잘함, 0.5 = 상대의 절반.
+  return Math.max(-50, Math.min(50, (avgRatio - 1) * 100));
+}
+
 // 기능명세서: "라인별 티어선정"의 재료 데이터 — 실제 매치 기록을 라이엇 Match-V5에서
 // 가져와 저장하고, user_position_stats(라인별 게임 수/승률)를 다시 계산함.
 // API 명세서: POST /game-accounts/:id/match-history/sync
@@ -252,6 +282,17 @@ export async function performMatchHistorySync(
       continue;
     }
 
+    // 같은 라인, 다른 팀인 딱 한 명(라인전 상대)을 찾음 — 아람 등 teamPosition이
+    // 없는 모드거나(빈 문자열) 중복 포지션(노멀 블라인드 등)이면 못 찾을 수 있음.
+    const opponent = participant.teamPosition
+      ? match.info.participants.find(
+          (p) => p.teamPosition === participant.teamPosition && p.teamId !== participant.teamId,
+        )
+      : undefined;
+    const performanceScore = opponent
+      ? calculatePerformanceScore(participant, opponent, match.info.gameDuration)
+      : null;
+
     const matchRow = await prisma.matchHistory.upsert({
       where: { riotMatchId: match.metadata.matchId },
       update: {},
@@ -280,8 +321,26 @@ export async function performMatchHistorySync(
         damageDealt: participant.totalDamageDealtToChampions,
         visionScore: participant.visionScore,
         win: participant.win,
+        performanceScore,
       },
     });
+
+    // 실제 매치 하나하나를 개별적으로 internal_mmr에도 반영 (2026-08-29 추가) —
+    // 그동안 performanceScore가 position_mmr(라인별)에만 반영되고 있어서, "전적"
+    // 페이지에서는 점수가 오르는 게 보이는데 그룹 티어표(internal_mmr 기준 1~5등급)는
+    // 안 움직이는 불일치가 있었음. 이 매치는 위 newMatchIds 필터로 "한 번도 동기화된
+    // 적 없는 매치"임이 보장돼서, 재동기화해도 같은 매치가 또 반영되진 않음 —
+    // "지금 갱신" 연타 버그와 같은 재귀적 드리프트 없이 매치당 딱 한 번만 적용됨.
+    if (performanceScore !== null) {
+      const mmrDelta = Math.round(performanceScore * PERFORMANCE_TO_MMR_FACTOR);
+      if (mmrDelta !== 0) {
+        await prisma.userGameStat.upsert({
+          where: { gameAccountId },
+          update: { internalMmr: { increment: mmrDelta } },
+          create: { gameAccountId, internalMmr: 1000 + mmrDelta },
+        });
+      }
+    }
 
     syncedCount += 1;
     // Development Key 기준 초당 20건 제한을 피하기 위한 최소한의 지연.
@@ -303,12 +362,22 @@ export async function performMatchHistorySync(
 // 낮으면 내림. 표본이 적을 때(예: 2게임 100% 승률) 과하게 반영되지 않도록
 // 게임 수 기준 신뢰도 계수를 곱함 — POSITION_MMR_FULL_CONFIDENCE_GAMES판
 // 이상이어야 보정폭(POSITION_MMR_SWING)을 100% 반영.
+// avgPerformanceScore(라인전 상대 대비 KDA/CS/딜량 평균, -50~50)도 같은 신뢰도로
+// 반영 — "승패만이 아니라 그 판을 얼마나 잘했는지"도 보라는 요청으로 추가함
+// (2026-08-28). 이겨도 라인전에서 밀렸으면 소폭 감점, 져도 캐리했으면 소폭 가점.
 const POSITION_MMR_SWING = 200;
 const POSITION_MMR_FULL_CONFIDENCE_GAMES = 20;
 
-function calculatePositionMmr(baselineMmr: number, winRate: number, gamesPlayed: number): number {
+function calculatePositionMmr(
+  baselineMmr: number,
+  winRate: number,
+  gamesPlayed: number,
+  avgPerformanceScore: number,
+): number {
   const confidence = Math.min(gamesPlayed / POSITION_MMR_FULL_CONFIDENCE_GAMES, 1);
-  return Math.round(baselineMmr + (winRate - 0.5) * POSITION_MMR_SWING * confidence);
+  return Math.round(
+    baselineMmr + (winRate - 0.5) * POSITION_MMR_SWING * confidence + avgPerformanceScore * confidence,
+  );
 }
 
 // match_history_participants.position은 라이엇 원본 값(TOP/JUNGLE/MIDDLE/BOTTOM/
@@ -325,35 +394,46 @@ const RIOT_TO_INTERNAL_POSITION: Record<string, string> = {
 };
 
 // match_history_participants를 포지션별로 묶어서 games_played/win_rate/position_mmr을
-// 다시 계산. 지금은 큐 종류(랭크/일반/칼바람) 구분 없이 전부 합산 — 필요하면 나중에 필터 추가.
+// 다시 계산. 랭크 게임(RANKED_SOLO_5x5)이 하나라도 있으면 그 라인은 랭크 게임만
+// 집계하고, 랭크 게임이 하나도 없으면 그제서야 일반 게임까지 포함 — "최대한 랭크
+// 기준으로, 없으면 일반전으로" 요청 반영 (2026-08-28).
 async function recomputePositionStats(gameAccountId: number) {
   const [participants, gameAccount] = await Promise.all([
-    prisma.matchHistoryParticipant.findMany({ where: { gameAccountId, position: { not: null } } }),
+    prisma.matchHistoryParticipant.findMany({
+      where: { gameAccountId, position: { not: null } },
+      include: { match: { select: { queueType: true } } },
+    }),
     prisma.gameAccount.findUnique({ where: { id: gameAccountId }, include: { stats: true } }),
   ]);
 
   const baselineMmr = gameAccount?.stats?.internalMmr ?? 1000;
 
-  const grouped = new Map<string, { games: number; wins: number }>();
+  type ParticipantWithMatch = (typeof participants)[number];
+  const byPosition = new Map<string, ParticipantWithMatch[]>();
   for (const p of participants) {
     const key = RIOT_TO_INTERNAL_POSITION[p.position as string];
     if (!key) continue; // 알 수 없는 포지션 값(방어적 처리) — 집계에서 제외
-
-    const entry = grouped.get(key) ?? { games: 0, wins: 0 };
-    entry.games += 1;
-    if (p.win) entry.wins += 1;
-    grouped.set(key, entry);
+    const list = byPosition.get(key) ?? [];
+    list.push(p);
+    byPosition.set(key, list);
   }
 
   const results = [];
-  for (const [position, { games, wins }] of grouped) {
-    const winRate = wins / games;
-    const positionMmr = calculatePositionMmr(baselineMmr, winRate, games);
+  for (const [position, allGames] of byPosition) {
+    const rankedGames = allGames.filter((p) => p.match.queueType === "RANKED_SOLO_5x5");
+    const games = rankedGames.length > 0 ? rankedGames : allGames;
+
+    const wins = games.filter((p) => p.win).length;
+    const winRate = wins / games.length;
+    const scored = games.filter((p) => p.performanceScore !== null);
+    const avgPerformanceScore =
+      scored.length > 0 ? scored.reduce((sum, p) => sum + (p.performanceScore ?? 0), 0) / scored.length : 0;
+    const positionMmr = calculatePositionMmr(baselineMmr, winRate, games.length, avgPerformanceScore);
 
     const stat = await prisma.userPositionStat.upsert({
       where: { gameAccountId_position: { gameAccountId, position } },
-      update: { gamesPlayed: games, winRate, positionMmr },
-      create: { gameAccountId, position, gamesPlayed: games, winRate, positionMmr },
+      update: { gamesPlayed: games.length, winRate, positionMmr },
+      create: { gameAccountId, position, gamesPlayed: games.length, winRate, positionMmr },
     });
     results.push(stat);
   }
