@@ -102,6 +102,19 @@ export async function createEvaluation(req: Request, res: Response, next: NextFu
   }
 }
 
+// DELETE /matches/:id
+export async function deleteMatch(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    await matchesService.deleteMatch(id, req.user!.id);
+    res.status(204).send();
+  } catch (err) {
+    next(err);
+  }
+}
+
 // GET /matches/:id/mmr-changes
 export async function getMmrChangesForMatch(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {

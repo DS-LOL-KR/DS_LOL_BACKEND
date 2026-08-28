@@ -28,6 +28,7 @@ export const matchesRouter = Router();
 matchesRouter.use(authMiddleware);
 matchesRouter.use("/:id", requireMatchGroupMember);
 matchesRouter.get("/:id", matchesController.getMatch);
+matchesRouter.delete("/:id", matchesController.deleteMatch);
 matchesRouter.post(
   "/:id/teams/generate",
   validate(generateTeamsSchema),

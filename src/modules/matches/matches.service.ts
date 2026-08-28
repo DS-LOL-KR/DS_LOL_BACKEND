@@ -621,6 +621,43 @@ export async function createEvaluation(
   }
 }
 
+// API 명세서: DELETE /matches/:id
+// 내전을 만든 사람이나 그룹장만 삭제 가능(요청한 유저는 컨트롤러에서 넘겨받음).
+// FINISHED된 내전이었으면 그때 참가자별로 반영해둔 mmr_change를 되돌려서, 내전
+// 기록은 지워졌는데 그 내전으로 오르내린 internal_mmr만 그대로 남는 상황을 막음.
+// (매너평가로 반영된 internal_mmr 변화까지는 되돌리지 않음 — mmrChange와 달리
+// "이 평가 하나가 얼마나 반영됐는지"를 따로 저장해두지 않아서 정확히 역산 불가.)
+export async function deleteMatch(matchId: number, userId: number): Promise<void> {
+  const match = await findMatchOrThrow(matchId);
+  const group = await findGroupOrThrow(match.groupId);
+
+  if (match.createdBy !== userId && group.ownerId !== userId) {
+    throw new AppError(403, "이 내전을 만든 사람이나 그룹장만 삭제할 수 있습니다.");
+  }
+
+  if (match.status === "FINISHED") {
+    await Promise.all(
+      match.participants.map(async (p) => {
+        if (p.mmrChange === 0) return;
+        const gameAccount = await prisma.gameAccount.findUnique({
+          where: { userId_gameId: { userId: p.userId, gameId: match.gameId } },
+        });
+        if (!gameAccount) return;
+        await prisma.userGameStat.updateMany({
+          where: { gameAccountId: gameAccount.id },
+          data: { internalMmr: { decrement: p.mmrChange } },
+        });
+      }),
+    );
+  }
+
+  await prisma.$transaction([
+    prisma.userEvaluation.deleteMany({ where: { matchId } }),
+    prisma.customMatchParticipant.deleteMany({ where: { matchId } }),
+    prisma.customMatch.delete({ where: { id: matchId } }),
+  ]);
+}
+
 // 기능명세서: "MMR 변동 내역 확인" — "내 점수가 왜 올랐는지/내렸는지 확인 가능"
 // API 명세서: GET /matches/:id/mmr-changes
 export async function getMmrChangesForMatch(matchId: number) {
