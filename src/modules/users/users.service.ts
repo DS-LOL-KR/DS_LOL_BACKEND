@@ -6,12 +6,17 @@ import type { UpdateMeInput } from "./users.schema"; // PATCH /users/me 요청 �
 
 // 다른 사람에게 공개해도 되는 필드만 골라둠 — email은 개인정보라 공개 프로필
 // (GET /users/:id)에서는 빼고, 본인 조회(GET /users/me)에서만 전체를 보여줌.
+// gameAccounts(신규, 2026-08-30)는 다른 사람 프로필 화면에서 "전적"을 보여주려면
+// game-accounts/:id/... 조회에 필요한 계정 id를 알아야 하는데, 그걸 넘겨주기
+// 위해 추가함 — game-accounts 쪽 API는 로그인만 하면 누구든 조회 가능하게
+// 이미 열려있어서(그룹 티어표 기능 특성상) 여기서 id만 노출해도 안전함.
 const PUBLIC_USER_SELECT = {
   id: true,
   nickname: true,
   profileImageUrl: true,
   bio: true,
   createdAt: true,
+  gameAccounts: { select: { id: true, gameId: true } },
 } as const;
 
 // API 명세서: GET /users/me
