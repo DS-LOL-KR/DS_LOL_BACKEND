@@ -28,10 +28,10 @@ export function officialTierToScore(officialTier: string | null): number {
 }
 
 // 기능명세서: "전체 티어선정" — "전적 + 티어 + 사용자 평가를 이용해 그룹 안에
-// 티어를 선정함". 가중치: 라이엇 공식 티어 30% + 기존 internal_mmr 60% +
-// 매너 평가(기준 3.5 대비 편차) 10% (2026-08-28 조정 — 원래 티어 70%였는데,
-// 공식 티어가 낮아도 실제로 잘하는 사람이 있어서 그동안 쌓인(내전 결과가 반영된)
-// internal_mmr 쪽 비중을 더 크게 둠). tiers.service.ts(수동 그룹 재선정)와
+// 티어를 선정함". 가중치: 라이엇 공식 티어 20% + 기존 internal_mmr 70% +
+// 매너 평가(기준 3.5 대비 편차) 10% (2026-08-31 조정 — 공식 티어가 낮아도
+// 실제로 잘하는 사람이 있어서 그동안 쌓인(내전 결과가 반영된) internal_mmr
+// 쪽 비중을 더 크게 둠). tiers.service.ts(수동 그룹 재선정)와
 // game-accounts.service.ts(계정 갱신 시 자동 반영) 양쪽에서 공유해서 씀.
 export function recalculateInternalMmr(
   officialTier: string | null,
@@ -40,5 +40,5 @@ export function recalculateInternalMmr(
 ): number {
   const tierScore = officialTierToScore(officialTier);
   const mannerAdjustment = (mannerScore - 3.5) * 100;
-  return Math.round(tierScore * 0.3 + currentInternalMmr * 0.6 + mannerAdjustment * 0.1);
+  return Math.round(tierScore * 0.2 + currentInternalMmr * 0.7 + mannerAdjustment * 0.1);
 }
