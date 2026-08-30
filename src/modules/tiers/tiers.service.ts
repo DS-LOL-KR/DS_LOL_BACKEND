@@ -64,23 +64,35 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
     return latest;
   }, null);
 
-  // internal_mmr 내림차순 순위를 상위 20%씩 5개 구간(1~5티어)으로 나눔.
-  // position 쿼리 필터와 무관하게 그룹 전체 순위로 계산해서, 라인 탭을 바꿔도
-  // 같은 사람의 티어 숫자가 흔들리지 않게 함.
-  // 게임 계정을 아예 연동 안 한 멤버는 화면에 줄도 안 생기는데 순위 계산에는
-  // 기본값(1000)으로 끼어서 등급 경계를 은근히 밀어버리는 문제가 있어 제외함
-  // (2026-08-28, 실제 그룹에서 발견).
-  const ranked = memberInfos.filter((m) => m.linked).sort((a, b) => b.internalMmr - a.internalMmr);
+  // 순위를 상위 20%씩 5개 구간(1~5티어)으로 나눔. 라인 탭(position)이 있으면
+  // 그 라인의 position_mmr 기준으로, "전체" 탭이면 계정 전체 internal_mmr
+  // 기준으로 순위를 매김 — 그래서 라인 탭을 바꾸면 그 라인 실력 기준으로 등급도
+  // 같이 다시 계산되고, 같은 사람이라도 라인마다 등급이 달라질 수 있음
+  // (2026-08-31, "티어가 라인 탭 바꿔도 안 흔들려야 한다"에서 "라인 탭 기준으로
+  // 다시 계산되어야 한다"로 요청이 바뀜).
+  // 게임 계정을 아예 연동 안 했거나(전체 탭) 그 라인 기록이 없는(라인 탭) 멤버는
+  // 화면에 줄 자체가 안 생기는데 순위 계산에는 기본값으로 끼어서 등급 경계를
+  // 은근히 밀어버리는 문제가 있어 제외함(2026-08-28, 실제 그룹에서 발견).
+  const ranked = query.position
+    ? memberInfos
+        .map((m) => ({ userId: m.userId, score: m.positions[0]?.positionMmr }))
+        .filter((m): m is { userId: number; score: number } => m.score !== undefined)
+        .sort((a, b) => b.score - a.score)
+    : memberInfos
+        .filter((m) => m.linked)
+        .map((m) => ({ userId: m.userId, score: m.internalMmr }))
+        .sort((a, b) => b.score - a.score);
+
   const tierByUserId = new Map<number, 1 | 2 | 3 | 4 | 5>();
   ranked.forEach((member, index) => {
     const percentile = index / ranked.length;
     let tier = (Math.min(4, Math.floor(percentile * 5)) + 1) as 1 | 2 | 3 | 4 | 5;
 
-    // internal_mmr이 바로 위 순위와 완전히 같으면(동점) 정렬 순서(우연한 인덱스)
-    // 때문에 등급이 갈리지 않도록 같은 등급으로 묶음 — 실제로 두 멤버가 같은
-    // internal_mmr인데 한 명만 1티어, 한 명은 2티어로 나오는 문제가 있었음.
+    // 점수가 바로 위 순위와 완전히 같으면(동점) 정렬 순서(우연한 인덱스) 때문에
+    // 등급이 갈리지 않도록 같은 등급으로 묶음 — 실제로 두 멤버가 같은 점수인데
+    // 한 명만 1티어, 한 명은 2티어로 나오는 문제가 있었음.
     const prevMember = ranked[index - 1];
-    if (prevMember && prevMember.internalMmr === member.internalMmr) {
+    if (prevMember && prevMember.score === member.score) {
       tier = tierByUserId.get(prevMember.userId) ?? tier;
     }
 
