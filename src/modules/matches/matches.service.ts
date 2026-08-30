@@ -418,39 +418,35 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
     include: { participants: true },
   });
 
-  await createFollowUpMatch(finishedMatch);
-
   return buildMatchDetail(finishedMatch);
 }
 
-// 내전이 끝나도 같은 팀으로 연달아 여러 판을 계속하는 경우가 많아서, 끝나자마자
-// 같은 그룹·같은 팀 배정으로 "다음 판" 내전을 자동으로 하나 더 만들어 둠 —
-// 그래야 자동판정 배치(attemptAutoFinishMatches)가 새 판을 계속 지켜볼 수 있음.
-// 수동 종료("팀 A 승리" 버튼)와 자동판정 둘 다 finishMatch를 거치므로 여기
-// 한 곳에서만 처리하면 됨. 참가자 중 아무도 이 다음 판을 안 하고 그룹이 사실상
-// 끝났어도, 이 대기 중인 내전은 5분마다 확인만 할 뿐 별다른 비용이 없고, 나중에
-// 실제로 이어서 하면 정상적으로 다시 잡힘 — 그룹당 이렇게 "대기 중"인 내전은
-// 항상 최대 1개로 유지됨(끝날 때마다 다음 것 하나로 교체되는 구조라서 계속 쌓이지 않음).
-async function createFollowUpMatch(
-  finishedMatch: Awaited<ReturnType<typeof findMatchOrThrow>>,
-): Promise<void> {
+// API 명세서: POST /matches/:id/duplicate-teams ("이 팀 그대로 다음 판 만들기")
+// 매번 끝날 때마다 자동으로 다음 판을 만드는 대신(2026-08-30에 시도했다가, 자동
+// 으로 계속 이어지는 것보다 필요할 때만 누르는 버튼을 원하셔서 되돌림), 사용자가
+// 직접 눌렀을 때만 같은 그룹·같은 팀 배정으로 새 내전을 MATCHED 상태로 하나 더 만듦.
+export async function duplicateMatchTeams(matchId: number) {
+  const match = await findMatchOrThrow(matchId);
+
   const nextMatch = await prisma.customMatch.create({
     data: {
-      groupId: finishedMatch.groupId,
-      gameId: finishedMatch.gameId,
-      createdBy: finishedMatch.createdBy,
+      groupId: match.groupId,
+      gameId: match.gameId,
+      createdBy: match.createdBy,
       status: "MATCHED",
     },
   });
 
   await prisma.customMatchParticipant.createMany({
-    data: finishedMatch.participants.map((p) => ({
+    data: match.participants.map((p) => ({
       matchId: nextMatch.id,
       userId: p.userId,
       assignedTeam: p.assignedTeam,
       assignedPosition: p.assignedPosition,
     })),
   });
+
+  return getMatchById(nextMatch.id);
 }
 
 function sleep(ms: number): Promise<void> {

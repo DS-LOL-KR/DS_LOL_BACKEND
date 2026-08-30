@@ -89,6 +89,19 @@ export async function finishMatch(req: Request, res: Response, next: NextFunctio
   }
 }
 
+// POST /matches/:id/duplicate-teams
+export async function duplicateMatchTeams(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const match = await matchesService.duplicateMatchTeams(id);
+    res.status(201).json({ match });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /matches/:id/evaluations
 export async function createEvaluation(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {

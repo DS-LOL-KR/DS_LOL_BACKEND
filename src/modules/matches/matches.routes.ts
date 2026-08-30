@@ -36,6 +36,7 @@ matchesRouter.post(
 );
 matchesRouter.patch("/:id/teams", validate(updateTeamsSchema), matchesController.updateTeams);
 matchesRouter.post("/:id/finish", validate(finishMatchSchema), matchesController.finishMatch);
+matchesRouter.post("/:id/duplicate-teams", matchesController.duplicateMatchTeams);
 matchesRouter.post(
   "/:id/evaluations",
   validate(createEvaluationSchema),
