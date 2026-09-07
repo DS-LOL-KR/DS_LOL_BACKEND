@@ -27,6 +27,13 @@ export function officialTierToScore(officialTier: string | null): number {
   return rankIndex * 400 + divisionBonus;
 }
 
+// 가중치 공식을 바꿀 때마다 이 값을 올림 — game-accounts.service.ts의 performRefresh가
+// 계정의 저장된 mmr_version과 비교해서, 라이엇 티어는 그대로여도 공식이 바뀐 걸
+// 감지해 재계산하는 데 씀(2026-09-07 도입). 공식은 그대로 두고 상수만 조정하는
+// 변경(예: DIVISION_BONUS 값 미세조정)이면 굳이 안 올려도 되지만, 가중치 비율
+// 자체가 바뀌면 반드시 올릴 것.
+export const CURRENT_MMR_VERSION = 1;
+
 // 기능명세서: "전체 티어선정" — "전적 + 티어 + 사용자 평가를 이용해 그룹 안에
 // 티어를 선정함". 가중치: 라이엇 공식 티어 20% + 기존 internal_mmr 70% +
 // 매너 평가(기준 3.5 대비 편차) 10% (2026-08-31 조정 — 공식 티어가 낮아도

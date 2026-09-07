@@ -87,6 +87,10 @@ model UserGameStat {
   mannerScore    Float    @default(3.5) @map("manner_score")
   summonerLevel  Int?     @map("summoner_level") // (신규) 라이엇 소환사 레벨
   profileIconId  Int?     @map("profile_icon_id") // (신규) 프로필 아이콘 ID
+  // internal_mmr을 마지막으로 계산했을 때의 공식 버전(lib/mmr.ts CURRENT_MMR_VERSION).
+  // 가중치 공식이 바뀌면 이 값이 낮은 계정만 다음 갱신 때 한 번 재계산됨 — 티어가
+  // 그대로여도 공식 개편은 감지되게 하려는 목적(2026-09-07 도입).
+  mmrVersion     Int      @default(1) @map("mmr_version")
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
   gameAccount GameAccount @relation(fields: [gameAccountId], references: [id])

@@ -12,7 +12,7 @@ import {
   type RiotMatchParticipant,
 } from "./riot.client"; // 실제 라이엇 API 호출
 import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
-import { recalculateInternalMmr } from "../../lib/mmr"; // official_tier 기반 internal_mmr 계산 (tiers.service.ts와 공유)
+import { recalculateInternalMmr, CURRENT_MMR_VERSION } from "../../lib/mmr"; // official_tier 기반 internal_mmr 계산 + 공식 버전 (tiers.service.ts와 공유)
 import type {
   CreateGameAccountInput,
   ListMatchHistoryQuery,
@@ -117,21 +117,28 @@ async function performRefresh(gameAccount: { id: number; puuid: string }) {
   const soloQueue = entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");
   const officialTier = soloQueue ? `${soloQueue.tier} ${soloQueue.rank}` : null;
   // "지금 갱신"을 연타해도 internal_mmr이 계속 움직이던 버그 수정 (2026-08-28):
-  // recalculateInternalMmr은 현재 internal_mmr을 60% 가중치로 다시 섞어넣는 구조라,
+  // recalculateInternalMmr은 현재 internal_mmr을 70% 가중치로 다시 섞어넣는 구조라,
   // 공식 티어가 실제로 안 바뀌었는데도 매번 호출하면 "목표값" 쪽으로 조금씩 더
   // 수렴해가는 것처럼 계속 값이 변함. 티어가 실제로 바뀌었을 때(승급/강등)나
   // 계정을 처음 연동했을 때만 다시 계산하고, 그 외엔 기존 값을 그대로 둠.
+  // 다만 이 게이트만 있으면 가중치 공식 자체를 바꿔도(예: 20/70/10 조정) 이미
+  // 저장된 계정들은 티어가 그대로인 한 영원히 옛날 공식값에 머무름 — "지금 갱신"을
+  // 몇 번을 눌러도 안 바뀐다는 문의로 확인됨. mmr_version(계정에 마지막으로 적용된
+  // 공식 버전)을 CURRENT_MMR_VERSION과 비교해서, 공식이 바뀐 계정도 감지해 재계산함
+  // (2026-09-07 도입).
   const officialTierChanged = existingStats && existingStats.officialTier !== officialTier;
-  const internalMmr =
-    existingStats && !officialTierChanged
-      ? existingStats.internalMmr
-      : recalculateInternalMmr(officialTier, existingStats?.internalMmr ?? 1000, existingStats?.mannerScore ?? 3.5);
+  const isVersionOutdated = !existingStats || existingStats.mmrVersion !== CURRENT_MMR_VERSION;
+  const shouldRecalculate = !existingStats || officialTierChanged || isVersionOutdated;
+  const internalMmr = shouldRecalculate
+    ? recalculateInternalMmr(officialTier, existingStats?.internalMmr ?? 1000, existingStats?.mannerScore ?? 3.5)
+    : existingStats.internalMmr;
 
   const stats = await prisma.userGameStat.upsert({
     where: { gameAccountId },
     update: {
       officialTier,
       internalMmr,
+      mmrVersion: CURRENT_MMR_VERSION,
       summonerLevel: summoner.summonerLevel,
       profileIconId: summoner.profileIconId,
     },
@@ -139,6 +146,7 @@ async function performRefresh(gameAccount: { id: number; puuid: string }) {
       gameAccountId,
       officialTier,
       internalMmr,
+      mmrVersion: CURRENT_MMR_VERSION,
       summonerLevel: summoner.summonerLevel,
       profileIconId: summoner.profileIconId,
     },

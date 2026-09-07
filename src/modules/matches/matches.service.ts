@@ -1,7 +1,7 @@
 import { prisma } from "../../config/prisma"; // custom_matches, custom_match_participants 등 테이블 접근
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
 import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalancer"; // 실제 팀 배정 알고리즘
-import { recalculateInternalMmr } from "../../lib/mmr"; // 매너점수가 바뀔 때 internal_mmr에도 반영하기 위해 사용
+import { recalculateInternalMmr, CURRENT_MMR_VERSION } from "../../lib/mmr"; // 매너점수가 바뀔 때 internal_mmr에도 반영하기 위해 사용
 // 아래 각 요청의 바디 형태를 명시하기 위해 사용 (평가 생성 / 내전 생성 / 내전 종료 /
 // 팀 자동 구성 / 팀 수동 조정)
 import type {
@@ -476,8 +476,8 @@ async function recomputeMannerScore(targetUserId: number, gameId: number): Promi
 
   await prisma.userGameStat.upsert({
     where: { gameAccountId: gameAccount.id },
-    update: { mannerScore: average, internalMmr },
-    create: { gameAccountId: gameAccount.id, mannerScore: average, internalMmr },
+    update: { mannerScore: average, internalMmr, mmrVersion: CURRENT_MMR_VERSION },
+    create: { gameAccountId: gameAccount.id, mannerScore: average, internalMmr, mmrVersion: CURRENT_MMR_VERSION },
   });
 }
 
