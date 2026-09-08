@@ -13,6 +13,11 @@ export interface TierEntry {
   tier: 1 | 2 | 3 | 4 | 5;
   wins: number;
   losses: number;
+  // "전체" 탭 전용 — 라이엇 전적이 아니라 이 그룹 안에서 실제로 치른 내전
+  // (custom_matches) 결과 기준 승/패. 라인별로 안 나뉘는 계정 전체 값이라
+  // 이 유저의 모든 라인 행에 동일하게 들어감(internalMmr과 같은 성격).
+  customMatchWins: number;
+  customMatchLosses: number;
 }
 
 export interface TierTable {
@@ -33,6 +38,27 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
     where: { groupId },
     include: { user: { select: { id: true, nickname: true, profileImageUrl: true } } },
   });
+
+  // "전체" 탭의 승/패는 라이엇 전적이 아니라 이 그룹 안 내전(custom_matches) 결과
+  // 기준으로 보여달라는 요청(2026-09-09) — assignedTeam이 null인 참가자(그 판에
+  // 실제로 팀 배정을 못 받은, 즉 안 뛴 사람)는 승패 어느 쪽으로도 안 세고 제외함
+  // (프론트 MatchHistoryPage에서 참여 안 한 경기가 패로 잘못 집계되던 버그와
+  // 같은 이유로, 여기서도 처음부터 assignedTeam not null로 걸러둠).
+  const customMatchParticipations = await prisma.customMatchParticipant.findMany({
+    where: {
+      userId: { in: members.map((m) => m.userId) },
+      assignedTeam: { not: null },
+      match: { groupId, status: "FINISHED" },
+    },
+    select: { userId: true, assignedTeam: true, match: { select: { winningTeam: true } } },
+  });
+  const customMatchRecordByUserId = new Map<number, { wins: number; losses: number }>();
+  for (const p of customMatchParticipations) {
+    const record = customMatchRecordByUserId.get(p.userId) ?? { wins: 0, losses: 0 };
+    if (p.assignedTeam === p.match.winningTeam) record.wins += 1;
+    else record.losses += 1;
+    customMatchRecordByUserId.set(p.userId, record);
+  }
 
   const memberInfos = await Promise.all(
     members.map(async (member) => {
@@ -103,6 +129,7 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
   // 계정 미연동이거나 해당 라인 기록이 없는 멤버는 그 라인에 줄이 생기지 않음.
   const entries: TierEntry[] = [];
   for (const member of memberInfos) {
+    const customMatchRecord = customMatchRecordByUserId.get(member.userId) ?? { wins: 0, losses: 0 };
     for (const positionStat of member.positions) {
       const wins = Math.round(positionStat.gamesPlayed * positionStat.winRate);
       entries.push({
@@ -116,6 +143,8 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
         tier: tierByUserId.get(member.userId) ?? 5,
         wins,
         losses: positionStat.gamesPlayed - wins,
+        customMatchWins: customMatchRecord.wins,
+        customMatchLosses: customMatchRecord.losses,
       });
     }
   }
