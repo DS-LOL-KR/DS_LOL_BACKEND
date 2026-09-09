@@ -1,7 +1,6 @@
-import fs from "node:fs"; // 프로필 이미지 교체 시 이전 파일을 로컬 디스크에서 지우기 위해 사용
-import path from "node:path"; // 이전 이미지 파일 경로를 조합하기 위해 사용
 import { prisma } from "../../config/prisma"; // users 테이블 조회/수정을 위해 사용
 import { AppError } from "../../lib/AppError"; // 존재하지 않는 유저 조회 시 404를 명확하게 표현하기 위해 사용
+import { saveProfileImage, deleteProfileImage } from "../../lib/storage/profileImageStorage"; // 로컬 디스크 vs S3 저장 방식 분기
 import type { UpdateMeInput } from "./users.schema"; // PATCH /users/me 요청 바디의 형태를 명시하기 위해 사용
 
 // 다른 사람에게 공개해도 되는 필드만 골라둠 — email은 개인정보라 공개 프로필
@@ -52,27 +51,27 @@ export async function updateMe(userId: number, input: UpdateMeInput) {
 
 // 기능명세서: "프로필 이미지"
 // API 명세서: POST /users/me/profile-image
-// 로컬 디스크 저장 방식으로 결정 (2026-08-20) — profileImageUpload.middleware.ts가
-// uploads/profile-images/에 파일을 저장해두고, 여기서는 그 파일명만 받아서
-// DB의 profileImageUrl을 "/uploads/profile-images/<파일명>" 형태로 갱신함.
-export async function updateProfileImage(userId: number, filename: string) {
+// 저장 방식(로컬 디스크 vs S3)은 profileImageStorage.ts가 env.isS3Configured로
+// 알아서 고름 — 2026-09-09, AWS 계정을 아직 안 붙여서 지금은 항상 로컬 디스크로
+// 저장됨. 나중에 AWS_* 환경변수만 채우면 이 코드는 그대로 두고 바로 S3로 전환됨.
+export async function updateProfileImage(userId: number, file: Express.Multer.File) {
   const previous = await prisma.user.findUnique({
     where: { id: userId },
     select: { profileImageUrl: true },
   });
 
+  const profileImageUrl = await saveProfileImage(file, userId);
+
   const user = await prisma.user.update({
     where: { id: userId },
-    data: { profileImageUrl: `/uploads/profile-images/${filename}` },
+    data: { profileImageUrl },
   });
 
-  // 이전에 업로드해둔 이미지가 있으면 디스크에 계속 쌓이지 않게 지움. 우리가
-  // 만든 경로가 아닌 값(외부 URL 등)이었을 가능성을 대비해 접두사를 확인.
-  if (previous?.profileImageUrl?.startsWith("/uploads/profile-images/")) {
-    const oldPath = path.join(process.cwd(), previous.profileImageUrl);
-    fs.unlink(oldPath, () => {
-      // 이미 지워졌거나 없는 파일이어도 상관없어서 에러는 무시.
-    });
+  // 이전에 업로드해둔 이미지가 있으면 계속 쌓이지 않게 지움 (로컬이면 디스크,
+  // S3면 버킷에서). 외부 URL(구글 프로필 사진 등)이었을 가능성은
+  // deleteProfileImage 내부에서 접두사를 확인해 걸러냄.
+  if (previous?.profileImageUrl) {
+    await deleteProfileImage(previous.profileImageUrl);
   }
 
   return user;

@@ -49,7 +49,7 @@ export async function updateProfileImage(req: Request, res: Response, next: Next
       return;
     }
 
-    const user = await usersService.updateProfileImage(req.user!.id, req.file.filename);
+    const user = await usersService.updateProfileImage(req.user!.id, req.file);
     res.status(200).json({ user });
   } catch (err) {
     next(err);
