@@ -72,6 +72,25 @@ export async function getMatchById(matchId: number) {
   return buildMatchDetail(await findMatchOrThrow(matchId));
 }
 
+// 선호 라인을 정함 — 유저가 game-accounts.service.ts의
+// PATCH /game-accounts/:id/preferred-position로 직접 지정해둔 main_position이
+// 있으면 그걸 최우선으로 쓰고(2026-09-09 도입), 없으면 지금까지처럼 판수가 가장
+// 많은 라인으로 자동 추론함. 직접 지정한 라인을 실제로 뛴 기록이 없으면(신규
+// 라인 도전 등) positionMmr을 못 찾으므로 undefined를 반환 — 호출부에서 다른
+// 값으로 폴백함.
+function resolvePreferredPosition(
+  stats: { mainPosition: string | null } | null | undefined,
+  positionStats: { position: string; gamesPlayed: number; positionMmr: number }[],
+): { position: string | null; positionMmr: number | undefined } {
+  if (stats?.mainPosition) {
+    const mainStat = positionStats.find((p) => p.position === stats.mainPosition);
+    return { position: stats.mainPosition, positionMmr: mainStat?.positionMmr };
+  }
+
+  const topPosition = [...positionStats].sort((a, b) => b.gamesPlayed - a.gamesPlayed)[0];
+  return { position: topPosition?.position ?? null, positionMmr: topPosition?.positionMmr };
+}
+
 // 그룹의 게임 종목 기준으로 이 유저의 mmr/선호 포지션을 조회.
 // 연결된 계정이 없으면 기본값(mmr 1000, 포지션 없음)으로 취급.
 // mmr은 "라인별 MMR"(user_position_stats.position_mmr)을 우선 사용 — 선호 라인이
@@ -87,12 +106,12 @@ async function resolveParticipantStats(userId: number, gameId: number): Promise<
     return { userId, mmr: 1000, preferredPosition: null };
   }
 
-  const topPosition = [...gameAccount.positionStats].sort((a, b) => b.gamesPlayed - a.gamesPlayed)[0];
+  const preferred = resolvePreferredPosition(gameAccount.stats, gameAccount.positionStats);
 
   return {
     userId,
-    mmr: topPosition?.positionMmr ?? gameAccount.stats?.internalMmr ?? 1000,
-    preferredPosition: topPosition?.position ?? null,
+    mmr: preferred.positionMmr ?? gameAccount.stats?.internalMmr ?? 1000,
+    preferredPosition: preferred.position,
   };
 }
 
@@ -145,17 +164,17 @@ async function buildParticipantDetail(
     }),
   ]);
 
-  const topPosition = gameAccount
-    ? [...gameAccount.positionStats].sort((a, b) => b.gamesPlayed - a.gamesPlayed)[0]
-    : undefined;
+  const preferred = gameAccount
+    ? resolvePreferredPosition(gameAccount.stats, gameAccount.positionStats)
+    : { position: null, positionMmr: undefined };
   const assignedPositionStat = gameAccount?.positionStats.find(
     (p) => p.position === participant.assignedPosition,
   );
 
-  // 실제로 배정된 라인의 MMR을 우선 쓰고, 그 라인 기록이 없으면 가장 많이 한
-  // 라인 MMR, 그것도 없으면 전체 internal_mmr로 폴백.
+  // 실제로 배정된 라인의 MMR을 우선 쓰고, 그 라인 기록이 없으면 선호 라인 MMR,
+  // 그것도 없으면 전체 internal_mmr로 폴백.
   const mmr =
-    assignedPositionStat?.positionMmr ?? topPosition?.positionMmr ?? gameAccount?.stats?.internalMmr ?? 1000;
+    assignedPositionStat?.positionMmr ?? preferred.positionMmr ?? gameAccount?.stats?.internalMmr ?? 1000;
 
   return {
     id: participant.id,
@@ -169,7 +188,7 @@ async function buildParticipantDetail(
     tier: gameAccount?.stats?.officialTier ?? null,
     mmr,
     hasLinkedAccount: gameAccount !== null,
-    preferredPosition: topPosition?.position ?? null,
+    preferredPosition: preferred.position,
   };
 }
 

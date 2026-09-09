@@ -36,3 +36,20 @@ export const listChampionMasteriesQuerySchema = z.object({
 });
 
 export type ListChampionMasteriesQuery = z.infer<typeof listChampionMasteriesQuerySchema>;
+
+// API 명세서: PATCH /game-accounts/:id/preferred-position
+// 내부 라인 약어(TOP/JUG/MID/ADC/SUP) — 라이엇 원본 값(TOP/JUNGLE/...)이 아니라
+// teamBalancer.ts/assignedPosition 등 내전 팀 배정 쪽에서 이미 쓰는 값과 맞춤.
+// null을 명시적으로 보내면 "직접 지정 해제 → 자동 추론으로 되돌리기"로 처리함.
+const POSITION_ENUM = z.enum(["TOP", "JUG", "MID", "ADC", "SUP"]);
+export const updatePreferredPositionSchema = z
+  .object({
+    mainPosition: POSITION_ENUM.nullable().optional(),
+    subPosition: POSITION_ENUM.nullable().optional(),
+  })
+  .refine((data) => !data.mainPosition || !data.subPosition || data.mainPosition !== data.subPosition, {
+    message: "메인 라인과 서브 라인은 다르게 설정해주세요.",
+    path: ["subPosition"],
+  });
+
+export type UpdatePreferredPositionInput = z.infer<typeof updatePreferredPositionSchema>;

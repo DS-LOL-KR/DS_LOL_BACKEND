@@ -21,6 +21,7 @@ export const gameAccountsRouter = Router();
 
 gameAccountsRouter.use(authMiddleware);
 gameAccountsRouter.post("/:id/refresh", gameAccountsController.refreshGameAccountStats);
+gameAccountsRouter.patch("/:id/preferred-position", gameAccountsController.updatePreferredPosition);
 gameAccountsRouter.get("/:id/stats", gameAccountsController.getGameAccountStats);
 gameAccountsRouter.post("/:id/match-history/sync", gameAccountsController.syncMatchHistory);
 gameAccountsRouter.get("/:id/match-history", gameAccountsController.listMatchHistory);

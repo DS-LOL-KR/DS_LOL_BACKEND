@@ -17,6 +17,7 @@ import type {
   CreateGameAccountInput,
   ListMatchHistoryQuery,
   SyncMatchHistoryInput,
+  UpdatePreferredPositionInput,
 } from "./game-accounts.schema";
 
 function sleep(ms: number): Promise<void> {
@@ -182,6 +183,32 @@ async function performRefresh(gameAccount: { id: number; puuid: string }) {
 export async function refreshGameAccountStats(userId: number, gameAccountId: number) {
   const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
   return performRefresh(account);
+}
+
+// API 명세서: PATCH /game-accounts/:id/preferred-position
+// 지금까지 주라인은 무조건 "판수가 가장 많은 라인"으로만 자동 추론됐는데(예:
+// 정글을 억지로 많이 돌린 사람도 정글이 주라인으로 잡힘), 유저가 직접 지정할 수
+// 있게 함(2026-09-09). matches.service.ts의 resolvePreferredPosition이 이 값을
+// 최우선으로 읽음 — mainPosition이 null이면 다시 자동 추론으로 돌아감.
+// user_game_stats 행이 아직 없으면(계정 연동만 하고 한 번도 갱신 안 한 경우)
+// upsert로 만들어줌 — 이 경우 internal_mmr 등은 기본값(1000/3.5)으로 시작.
+export async function updatePreferredPosition(
+  userId: number,
+  gameAccountId: number,
+  input: UpdatePreferredPositionInput,
+) {
+  await findOwnedGameAccountOrThrow(userId, gameAccountId);
+
+  const data = {
+    ...(input.mainPosition !== undefined && { mainPosition: input.mainPosition }),
+    ...(input.subPosition !== undefined && { subPosition: input.subPosition }),
+  };
+
+  return prisma.userGameStat.upsert({
+    where: { gameAccountId },
+    update: data,
+    create: { gameAccountId, ...data },
+  });
 }
 
 // 기능명세서: "전적 자동 갱신" — "자동으로 전적 갱신을 하는데..." (자동 버전)

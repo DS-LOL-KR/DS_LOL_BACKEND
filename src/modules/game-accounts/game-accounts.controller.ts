@@ -5,6 +5,7 @@ import {
   listChampionMasteriesQuerySchema,
   listMatchHistoryQuerySchema,
   syncMatchHistorySchema,
+  updatePreferredPositionSchema,
 } from "./game-accounts.schema"; // 쿼리/바디는 validate() 미들웨어가 아니라 여기서 직접 검증(쿼리라 body 전용 미들웨어를 못 씀)
 
 function parseId(raw: string, next: NextFunction): number | null {
@@ -66,6 +67,25 @@ export async function refreshGameAccountStats(req: Request, res: Response, next:
     if (id === null) return;
 
     const stats = await gameAccountsService.refreshGameAccountStats(req.user!.id, id);
+    res.status(200).json({ stats });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// PATCH /game-accounts/:id/preferred-position
+export async function updatePreferredPosition(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const parsed = updatePreferredPositionSchema.safeParse(req.body ?? {});
+    if (!parsed.success) {
+      next(new AppError(400, "Validation failed", parsed.error.flatten()));
+      return;
+    }
+
+    const stats = await gameAccountsService.updatePreferredPosition(req.user!.id, id, parsed.data);
     res.status(200).json({ stats });
   } catch (err) {
     next(err);
