@@ -115,6 +115,19 @@ export async function createEvaluation(req: Request, res: Response, next: NextFu
   }
 }
 
+// GET /matches/:id/evaluations/me
+export async function getMyEvaluatedTargetIds(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const targetIds = await matchesService.getMyEvaluatedTargetIds(id, req.user!.id);
+    res.status(200).json({ targetIds });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // DELETE /matches/:id
 export async function deleteMatch(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {

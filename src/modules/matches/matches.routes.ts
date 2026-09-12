@@ -43,6 +43,7 @@ matchesRouter.post(
   matchesController.createEvaluation,
 );
 matchesRouter.get("/:id/mmr-changes", matchesController.getMmrChangesForMatch);
+matchesRouter.get("/:id/evaluations/me", matchesController.getMyEvaluatedTargetIds);
 
 // users.routes.ts에서 /me/mmr-history로 마운트됨 (authMiddleware는 거기서 적용)
 export const myMmrHistoryRouter = Router();

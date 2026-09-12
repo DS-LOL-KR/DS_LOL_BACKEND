@@ -584,6 +584,19 @@ export async function createEvaluation(
   }
 }
 
+// 프론트가 "이 매치에서 내가 이미 평가한 팀원" 목록을 서버에 물어볼 방법이
+// 없어서, 매치 상세를 새로고침/재방문할 때마다 이미 평가한 사람한테도 평가
+// 모달이 다시 뜨던 문제 수정용(2026-09-13, 문의로 확인됨 — 프론트가 그동안
+// 세션 안 로컬 state로만 "제출 완료"를 추적해서 새로고침하면 초기화됐음).
+// API 명세서: GET /matches/:id/evaluations/me
+export async function getMyEvaluatedTargetIds(matchId: number, evaluatorId: number): Promise<number[]> {
+  const evaluations = await prisma.userEvaluation.findMany({
+    where: { matchId, evaluatorId },
+    select: { targetId: true },
+  });
+  return evaluations.map((e) => e.targetId);
+}
+
 // API 명세서: DELETE /matches/:id
 // 내전을 만든 사람이나 그룹장만 삭제 가능(요청한 유저는 컨트롤러에서 넘겨받음).
 // FINISHED된 내전이었으면 그때 참가자별로 반영해둔 mmr_change를 되돌려서, 내전
