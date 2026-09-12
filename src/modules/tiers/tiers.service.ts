@@ -18,6 +18,11 @@ export interface TierEntry {
   // 이 유저의 모든 라인 행에 동일하게 들어감(internalMmr과 같은 성격).
   customMatchWins: number;
   customMatchLosses: number;
+  // 유저가 PATCH /game-accounts/:id/preferred-position로 직접 지정해둔 주라인.
+  // 라인별로 안 나뉘는 계정 전체 값이라 모든 라인 행에 동일하게 들어감 —
+  // 그룹 관리 화면의 "주 라인" 컬럼이 이 값을 최우선으로 쓰게 하려고 추가함
+  // (2026-09-12, 그 전엔 그 컬럼이 이 값을 몰라서 항상 판수 1위 라인만 보여줬음).
+  mainPosition: string | null;
 }
 
 export interface TierTable {
@@ -78,6 +83,7 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
         linked: gameAccount !== null,
         officialTier: gameAccount?.stats?.officialTier ?? null,
         internalMmr: gameAccount?.stats?.internalMmr ?? 1000,
+        mainPosition: gameAccount?.stats?.mainPosition ?? null,
         positions: gameAccount?.positionStats ?? [],
         statsUpdatedAt: gameAccount?.stats?.updatedAt ?? null,
       };
@@ -145,6 +151,7 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
         losses: positionStat.gamesPlayed - wins,
         customMatchWins: customMatchRecord.wins,
         customMatchLosses: customMatchRecord.losses,
+        mainPosition: member.mainPosition,
       });
     }
   }
