@@ -202,6 +202,10 @@ model Group {
   ownerId    Int      @map("owner_id")
   gameId     Int      @map("game_id")
   inviteCode String   @unique @map("invite_code")
+  // 팀 구성 완료/내전 종료 시 알림을 쏠 디스코드 웹후크 URL (그룹장이 설정,
+  // 선택사항). 2026-09-12 도입 — 그 전엔 알림 수단이 전혀 없어서 팀 배정/결과를
+  // 유저가 직접 앱에 재접속해서 확인해야 했음.
+  discordWebhookUrl String? @map("discord_webhook_url")
   createdAt  DateTime @default(now()) @map("created_at")
 
   owner   User          @relation("GroupOwner", fields: [ownerId], references: [id])

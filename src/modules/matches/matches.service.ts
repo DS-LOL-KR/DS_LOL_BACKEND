@@ -2,6 +2,7 @@ import { prisma } from "../../config/prisma"; // custom_matches, custom_match_pa
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
 import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalancer"; // 실제 팀 배정 알고리즘
 import { recalculateInternalMmr, CURRENT_MMR_VERSION } from "../../lib/mmr"; // 매너점수가 바뀔 때 internal_mmr에도 반영하기 위해 사용
+import { sendDiscordNotification } from "../../lib/discord"; // 팀 구성/내전 종료를 그룹 디스코드 채널에 알리기 위해 사용
 // 아래 각 요청의 바디 형태를 명시하기 위해 사용 (평가 생성 / 내전 생성 / 내전 종료 /
 // 팀 자동 구성 / 팀 수동 조정)
 import type {
@@ -18,6 +19,19 @@ async function findGroupOrThrow(groupId: number) {
     throw new AppError(404, "그룹을 찾을 수 없습니다.");
   }
   return group;
+}
+
+// 그룹장이 PATCH /groups/:id/discord-webhook로 등록해둔 채널에 팀 구성/내전 종료를
+// 알림(2026-09-12 도입) — 등록 안 해뒀으면 조용히 아무 것도 안 함. 호출부에서
+// await 없이(void) 불러서, 디스코드가 느리거나 안 되는 것 때문에 실제 응답이
+// 늦어지지 않게 함 — sendDiscordNotification 자체도 내부에서 실패를 삼킴.
+async function notifyGroupDiscord(groupId: number, content: string): Promise<void> {
+  const group = await prisma.group.findUnique({
+    where: { id: groupId },
+    select: { discordWebhookUrl: true },
+  });
+  if (!group?.discordWebhookUrl) return;
+  await sendDiscordNotification(group.discordWebhookUrl, content);
 }
 
 async function findMatchOrThrow(matchId: number) {
@@ -314,7 +328,16 @@ export async function generateTeams(matchId: number, input: GenerateTeamsInput) 
     prisma.customMatch.update({ where: { id: matchId }, data: { status: "MATCHED" } }),
   ]);
 
-  return buildMatchDetail(await findMatchOrThrow(matchId));
+  const detail = await buildMatchDetail(await findMatchOrThrow(matchId));
+
+  const teamA = detail.participants.filter((p) => p.assignedTeam === "TEAM_A").map((p) => p.nickname).join(", ");
+  const teamB = detail.participants.filter((p) => p.assignedTeam === "TEAM_B").map((p) => p.nickname).join(", ");
+  void notifyGroupDiscord(
+    match.groupId,
+    `🎮 팀이 구성됐어요!\n블루팀: ${teamA || "-"}\n레드팀: ${teamB || "-"}`,
+  );
+
+  return detail;
 }
 
 // 기능명세서: "팀 구성 재추첨/수동 조정" — "팀이 맘에 안 들면 변경 가능"
@@ -435,7 +458,21 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
     include: { participants: true },
   });
 
-  return buildMatchDetail(finishedMatch);
+  const detail = await buildMatchDetail(finishedMatch);
+
+  const winners = detail.participants.filter((p) => p.assignedTeam === input.winningTeam);
+  const losers = detail.participants.filter((p) => p.assignedTeam && p.assignedTeam !== input.winningTeam);
+  const formatDelta = (delta: number | undefined) =>
+    delta === undefined ? "" : ` (${delta > 0 ? "+" : ""}${delta})`;
+  const teamLabel = input.winningTeam === "TEAM_A" ? "블루팀" : "레드팀";
+  void notifyGroupDiscord(
+    match.groupId,
+    `🏆 내전 결과: ${teamLabel} 승리!\n` +
+      `승: ${winners.map((p) => p.nickname).join(", ") || "-"}${formatDelta(winners[0]?.mmrChange)}\n` +
+      `패: ${losers.map((p) => p.nickname).join(", ") || "-"}${formatDelta(losers[0]?.mmrChange)}`,
+  );
+
+  return detail;
 }
 
 // API 명세서: POST /matches/:id/duplicate-teams ("이 팀 그대로 다음 판 만들기")

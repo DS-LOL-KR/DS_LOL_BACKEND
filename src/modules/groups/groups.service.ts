@@ -2,7 +2,12 @@ import crypto from "node:crypto"; // 초대 코드용 랜덤 문자열 생성에
 import { Prisma } from "@prisma/client"; // 유니크 제약 위반(P2002) 종류를 구분하기 위해 사용
 import { prisma } from "../../config/prisma"; // groups, group_members 테이블 접근
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
-import type { CreateGroupInput, JoinGroupInput, TransferOwnerInput } from "./groups.schema"; // 각 요청 바디의 형태를 명시하기 위해 사용
+import type {
+  CreateGroupInput,
+  JoinGroupInput,
+  TransferOwnerInput,
+  UpdateDiscordWebhookInput,
+} from "./groups.schema"; // 각 요청 바디의 형태를 명시하기 위해 사용
 
 // 8자리 대문자 16진수 (예: "A1B2C3D4") — 충돌 가능성은 극히 낮지만, 혹시 겹치면
 // 아래에서 재시도하도록 되어있음.
@@ -114,6 +119,20 @@ export async function transferOwner(groupId: number, input: TransferOwnerInput) 
   ]);
 
   return updatedGroup;
+}
+
+// API 명세서: PATCH /groups/:id/discord-webhook (그룹장 전용, requireGroupOwner
+// 미들웨어가 이미 걸러줌 — 여기서는 그룹 존재 여부만 확인)
+export async function updateDiscordWebhook(groupId: number, input: UpdateDiscordWebhookInput) {
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group) {
+    throw new AppError(404, "그룹을 찾을 수 없습니다.");
+  }
+
+  return prisma.group.update({
+    where: { id: groupId },
+    data: { discordWebhookUrl: input.webhookUrl },
+  });
 }
 
 // 기능명세서: "그룹 키" — 초대 코드로 그룹 참가

@@ -24,3 +24,12 @@ export const transferOwnerSchema = z.object({
 });
 
 export type TransferOwnerInput = z.infer<typeof transferOwnerSchema>;
+
+// API 명세서: PATCH /groups/:id/discord-webhook
+// null을 보내면 알림 끄기(연동 해제). 빈 문자열은 굳이 허용 안 함 — 끄고 싶으면
+// null로 명확하게 보내게 함.
+export const updateDiscordWebhookSchema = z.object({
+  webhookUrl: z.string().url().startsWith("https://discord.com/api/webhooks/").nullable(),
+});
+
+export type UpdateDiscordWebhookInput = z.infer<typeof updateDiscordWebhookSchema>;

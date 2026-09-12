@@ -70,6 +70,19 @@ export async function transferOwner(req: Request, res: Response, next: NextFunct
   }
 }
 
+// PATCH /groups/:id/discord-webhook
+export async function updateDiscordWebhook(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const group = await groupsService.updateDiscordWebhook(id, req.body);
+    res.status(200).json({ group });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /groups/join
 export async function joinGroup(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
