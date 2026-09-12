@@ -334,7 +334,7 @@ export async function generateTeams(matchId: number, input: GenerateTeamsInput) 
   const teamB = detail.participants.filter((p) => p.assignedTeam === "TEAM_B").map((p) => p.nickname).join(", ");
   void notifyGroupDiscord(
     match.groupId,
-    `🎮 팀이 구성됐어요!\n블루팀: ${teamA || "-"}\n레드팀: ${teamB || "-"}`,
+    `🎮 팀이 구성됐어요!\n레드팀: ${teamA || "-"}\n블루팀: ${teamB || "-"}`,
   );
 
   return detail;
@@ -464,7 +464,8 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
   const losers = detail.participants.filter((p) => p.assignedTeam && p.assignedTeam !== input.winningTeam);
   const formatDelta = (delta: number | undefined) =>
     delta === undefined ? "" : ` (${delta > 0 ? "+" : ""}${delta})`;
-  const teamLabel = input.winningTeam === "TEAM_A" ? "블루팀" : "레드팀";
+  // TEAM_A = 레드, TEAM_B = 블루 (2026-09-12부터 — 그 전엔 반대였음)
+  const teamLabel = input.winningTeam === "TEAM_A" ? "레드팀" : "블루팀";
   void notifyGroupDiscord(
     match.groupId,
     `🏆 내전 결과: ${teamLabel} 승리!\n` +
