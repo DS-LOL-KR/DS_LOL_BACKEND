@@ -9,13 +9,13 @@ export type CreateMatchInput = z.infer<typeof createMatchSchema>;
 
 // 기능명세서: "팀 구성" — "티어별 비슷한 사람끼리 팀을 구성함, AI가 라인도 고려해서 팀을 짜줌"
 // API 명세서: POST /matches/:id/teams/generate
-// 5v5(10명)를 채우지 않아도(2명만 있어도) 팀이 만들어지던 버그 수정 —
-// balanceTeams 자체는 2명 이상이면 동작하는 범용 함수라 여기서 막아야 함(2026-09-13).
-const REQUIRED_PARTICIPANT_COUNT = 10;
+// 이 엔드포인트는 5v5(10명)뿐 아니라 프론트 MatchCreatePage의 3v3(6명)/커스텀(2명+)
+// 모드도 그대로 공유해서 씀 — "몇 명이어야 하는지"는 서버에 저장되지 않는 프론트
+// 전용 선택값이라, 여기서 특정 인원수를 강제하면 3v3/커스텀이 깨짐. 인원수 강제는
+// MatchCreatePage.tsx가 모드별로 이미 하고 있고(2026-09-13 확인), 여기는 팀을 나눌
+// 수 있는 최소 인원(2명)만 방어적으로 막음.
 export const generateTeamsSchema = z.object({
-  participantUserIds: z
-    .array(z.number().int().positive())
-    .length(REQUIRED_PARTICIPANT_COUNT, `5v5 내전은 정확히 ${REQUIRED_PARTICIPANT_COUNT}명이 필요합니다.`),
+  participantUserIds: z.array(z.number().int().positive()).min(2),
 });
 
 export type GenerateTeamsInput = z.infer<typeof generateTeamsSchema>;
