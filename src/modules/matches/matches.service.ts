@@ -647,9 +647,15 @@ export async function getMmrChangesForMatch(matchId: number) {
 }
 
 // API 명세서: GET /users/me/mmr-history
-export async function getMyMmrHistory(userId: number) {
+// groupId를 주면 그 그룹의 내전만(2026-09-13 추가) — 안 주면 유저가 속한 모든
+// 그룹의 내전이 합쳐져서 나온다. 그룹 티어 화면에서 "이 그룹에서의 MMR추이"를
+// 보여줄 땐 groupId를 반드시 넘겨야, 다른 그룹에서 뛴 내전 결과가 섞여 들어오지 않음.
+export async function getMyMmrHistory(userId: number, groupId?: number) {
   const participations = await prisma.customMatchParticipant.findMany({
-    where: { userId, match: { status: "FINISHED" } },
+    where: {
+      userId,
+      match: { status: "FINISHED", ...(groupId !== undefined && { groupId }) },
+    },
     include: { match: true },
     orderBy: { match: { createdAt: "desc" } },
   });

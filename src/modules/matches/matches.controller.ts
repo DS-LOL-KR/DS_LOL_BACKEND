@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express"; // Express 컨트롤러 함수 시그니처에 필요한 타입
 import * as matchesService from "./matches.service"; // 실제 내전 생성/팀 구성/평가/MMR 로직은 서비스 계층에 위임
 import { AppError } from "../../lib/AppError"; // :id가 숫자가 아닐 때 400으로 명확하게 막기 위해 사용
+import { myMmrHistoryQuerySchema } from "./matches.schema"; // GET /users/me/mmr-history의 groupId 쿼리 검증용
 
 function parseId(raw: string, next: NextFunction): number | null {
   const id = Number(raw);
@@ -157,7 +158,13 @@ export async function getMmrChangesForMatch(req: Request, res: Response, next: N
 // GET /users/me/mmr-history
 export async function getMyMmrHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
-    const history = await matchesService.getMyMmrHistory(req.user!.id);
+    const parsed = myMmrHistoryQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      next(new AppError(400, "Validation failed", parsed.error.flatten()));
+      return;
+    }
+
+    const history = await matchesService.getMyMmrHistory(req.user!.id, parsed.data.groupId);
     res.status(200).json({ history });
   } catch (err) {
     next(err);

@@ -67,7 +67,10 @@ export async function listMyGameAccounts(userId: number) {
 
 // API 명세서: DELETE /users/me/game-accounts/:id
 async function findOwnedGameAccountOrThrow(userId: number, gameAccountId: number) {
-  const account = await prisma.gameAccount.findUnique({ where: { id: gameAccountId } });
+  const account = await prisma.gameAccount.findUnique({
+    where: { id: gameAccountId },
+    include: { game: { select: { code: true } } },
+  });
 
   if (!account) {
     throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
@@ -77,6 +80,17 @@ async function findOwnedGameAccountOrThrow(userId: number, gameAccountId: number
   }
 
   return account;
+}
+
+// 전적 갱신(performRefresh)/매치 동기화는 League-V4·Summoner-V4·Champion-Mastery-V4·
+// Match-V5 등 LOL 전용 라이엇 API를 씀. 발로란트는 계정 연동(라이엇 Account-V1으로
+// puuid 확보)까지만 붙여둔 상태라(2026-09-13), 이 기능들을 그대로 타면 League API에
+// 발로란트 계정의 puuid로 조회를 시도해 에러가 나거나(리그 정보 없음) 빈 값이 조용히
+// 저장되는 등 헷갈리는 결과가 나옴 — 명확한 안내 에러로 막아둠.
+function assertLolAccount(account: { game: { code: string } }): void {
+  if (account.game.code !== "LOL") {
+    throw new AppError(400, "이 게임은 아직 전적 갱신/매치 동기화를 지원하지 않습니다.");
+  }
 }
 
 export async function deleteGameAccount(userId: number, gameAccountId: number): Promise<void> {
@@ -182,6 +196,7 @@ async function performRefresh(gameAccount: { id: number; puuid: string }) {
 // API 명세서: POST /game-accounts/:id/refresh (수동 버튼 쪽)
 export async function refreshGameAccountStats(userId: number, gameAccountId: number) {
   const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
+  assertLolAccount(account);
   return performRefresh(account);
 }
 
@@ -281,6 +296,7 @@ export async function syncMatchHistory(
   input: SyncMatchHistoryInput,
 ) {
   const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
+  assertLolAccount(account);
   return performMatchHistorySync(account, input.count);
 }
 

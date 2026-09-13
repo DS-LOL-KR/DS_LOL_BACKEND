@@ -156,6 +156,15 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
     }
   }
 
+  // 내전 만들기 화면에서 참가자를 티어순으로 훑어볼 수 있게 정렬(2026-09-13 요청) —
+  // 같은 티어끼리는 그 탭 기준 mmr(라인 탭이면 positionMmr, 전체 탭이면 internalMmr,
+  // 즉 등급을 매길 때 실제로 쓴 것과 같은 척도)로 내림차순 묶음.
+  entries.sort((a, b) => {
+    const scoreA = query.position ? a.positionMmr : a.internalMmr;
+    const scoreB = query.position ? b.positionMmr : b.internalMmr;
+    return a.tier - b.tier || scoreB - scoreA;
+  });
+
   return { tiers: entries, lastUpdatedAt: lastUpdatedAt?.toISOString() ?? null };
 }
 

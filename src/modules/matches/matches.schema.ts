@@ -9,8 +9,13 @@ export type CreateMatchInput = z.infer<typeof createMatchSchema>;
 
 // 기능명세서: "팀 구성" — "티어별 비슷한 사람끼리 팀을 구성함, AI가 라인도 고려해서 팀을 짜줌"
 // API 명세서: POST /matches/:id/teams/generate
+// 5v5(10명)를 채우지 않아도(2명만 있어도) 팀이 만들어지던 버그 수정 —
+// balanceTeams 자체는 2명 이상이면 동작하는 범용 함수라 여기서 막아야 함(2026-09-13).
+const REQUIRED_PARTICIPANT_COUNT = 10;
 export const generateTeamsSchema = z.object({
-  participantUserIds: z.array(z.number().int().positive()).min(2),
+  participantUserIds: z
+    .array(z.number().int().positive())
+    .length(REQUIRED_PARTICIPANT_COUNT, `5v5 내전은 정확히 ${REQUIRED_PARTICIPANT_COUNT}명이 필요합니다.`),
 });
 
 export type GenerateTeamsInput = z.infer<typeof generateTeamsSchema>;
@@ -46,3 +51,13 @@ export const createEvaluationSchema = z.object({
 });
 
 export type CreateEvaluationInput = z.infer<typeof createEvaluationSchema>;
+
+// API 명세서: GET /users/me/mmr-history
+// groupId 없이는 유저가 속한 모든 그룹의 MMR 변동이 뒤섞여서 나왔던 버그 수정용
+// (2026-09-13) — 특정 그룹 화면에서 보여줄 땐 그 그룹의 내전만 필터링되게 함.
+// 안 주면(그룹 무관하게 전체 보고 싶을 때 등) 기존처럼 전체를 반환.
+export const myMmrHistoryQuerySchema = z.object({
+  groupId: z.coerce.number().int().positive().optional(),
+});
+
+export type MyMmrHistoryQuery = z.infer<typeof myMmrHistoryQuerySchema>;
