@@ -19,6 +19,18 @@ const envSchema = z.object({
   RIOT_API_KEY: z.string().min(1, "RIOT_API_KEY is required"),
   RIOT_REGION: z.string().default("kr"),
 
+  // 디스코드 슬래시 명령어(/티어표, /전적, /내전결과) 봇 — 기존 discordWebhookUrl
+  // (그룹장이 등록하는 수신 웹후크, 단방향 알림용)과는 별개로, 이건 디스코드가
+  // 우리 서버로 인터랙션을 보내는 "앱"용 자격증명. 셋 다 없어도 서버는 정상
+  // 기동해야 해서(아직 팀 전체가 봇을 설정 안 했을 수 있음) optional로 둠 —
+  // discord.controller.ts가 DISCORD_PUBLIC_KEY 없으면 모든 요청을 401로 거부함.
+  DISCORD_BOT_TOKEN: z.string().optional(),
+  DISCORD_APPLICATION_ID: z.string().optional(),
+  DISCORD_PUBLIC_KEY: z.string().optional(),
+  // 슬래시 명령어를 전역 등록하면 반영까지 최대 1시간 걸림 — 개발 중엔 이 길드
+  // ID에만 즉시 등록하고 싶을 때 scripts/registerDiscordCommands.ts가 참조함.
+  DISCORD_TEST_GUILD_ID: z.string().optional(),
+
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
 
   // 프로필 이미지를 S3(또는 R2 등 S3 호환 스토리지)에 저장하려면 이 4개를 전부
@@ -45,6 +57,9 @@ export type Env = z.infer<typeof envSchema> & {
   // 위 AWS_* 4개가 전부 채워졌는지 — profileImageUpload.middleware.ts와
   // profileImageStorage.ts가 이 값으로 "로컬 디스크 vs S3" 저장 방식을 고름.
   isS3Configured: boolean;
+  // DISCORD_BOT_TOKEN/APPLICATION_ID/PUBLIC_KEY가 전부 채워졌는지 — 슬래시
+  // 명령어 등록 스크립트(scripts/registerDiscordCommands.ts)가 미리 확인하는 데 씀.
+  isDiscordBotConfigured: boolean;
 };
 
 // TODO: 테스트에서 환경변수를 쉽게 스텁할 수 있도록, 이 값을 나중에 필요할 때
@@ -56,6 +71,9 @@ export const env: Env = {
   isCrossSiteDeployment: !parsedEnv.CORS_ORIGIN.startsWith("http://localhost"),
   isS3Configured: Boolean(
     parsedEnv.AWS_REGION && parsedEnv.AWS_S3_BUCKET && parsedEnv.AWS_ACCESS_KEY_ID && parsedEnv.AWS_SECRET_ACCESS_KEY,
+  ),
+  isDiscordBotConfigured: Boolean(
+    parsedEnv.DISCORD_BOT_TOKEN && parsedEnv.DISCORD_APPLICATION_ID && parsedEnv.DISCORD_PUBLIC_KEY,
   ),
 };
 

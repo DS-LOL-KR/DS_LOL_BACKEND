@@ -206,6 +206,10 @@ model Group {
   // 선택사항). 2026-09-12 도입 — 그 전엔 알림 수단이 전혀 없어서 팀 배정/결과를
   // 유저가 직접 앱에 재접속해서 확인해야 했음.
   discordWebhookUrl String? @map("discord_webhook_url")
+  // 디스코드 슬래시 명령어(/티어표 등)가 "이 명령어를 보낸 디스코드 서버가 어느
+  // 그룹인지" 찾는 데 씀 — discordWebhookUrl(우리가 알림을 보내는 채널)과는 반대
+  // 방향(디스코드가 우리에게 요청을 보냄) 연동이라 별도 컬럼으로 둠(2026-09-18 도입).
+  discordGuildId String? @unique @map("discord_guild_id")
   createdAt  DateTime @default(now()) @map("created_at")
 
   owner   User          @relation("GroupOwner", fields: [ownerId], references: [id])

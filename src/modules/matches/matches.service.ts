@@ -36,7 +36,9 @@ async function notifyGroupDiscord(groupId: number, content: string): Promise<voi
 
 // 명단(포지션+닉네임)을 디스코드 코드 블록(```)으로 감싸서 고정폭 정렬되게 만듦 —
 // 그냥 쉼표로 나열하던 것보다 한눈에 훑기 좋게 해달라는 요청(2026-09-18)으로 변경.
-function formatRosterBlock(participants: { nickname: string; assignedPosition: string | null }[]): string {
+// export: discord.service.ts(슬래시 명령어 /내전결과)가 디스코드 웹후크 알림과
+// 같은 포맷으로 결과를 보여주려고 그대로 재사용함.
+export function formatRosterBlock(participants: { nickname: string; assignedPosition: string | null }[]): string {
   if (participants.length === 0) return "```\n-\n```";
   const lines = participants.map((p) =>
     p.assignedPosition ? `${p.assignedPosition.padEnd(4)} ${p.nickname}` : p.nickname,
@@ -45,7 +47,7 @@ function formatRosterBlock(participants: { nickname: string; assignedPosition: s
 }
 
 // 내전 결과용 — 승/패 팀 각각 닉네임 옆에 이번 판 mmr 변동을 붙여서 코드 블록으로.
-function formatResultBlock(participants: { nickname: string; mmrChange: number }[]): string {
+export function formatResultBlock(participants: { nickname: string; mmrChange: number }[]): string {
   if (participants.length === 0) return "```\n-\n```";
   const lines = participants.map((p) => `${p.nickname.padEnd(10)} ${p.mmrChange > 0 ? "+" : ""}${p.mmrChange}`);
   return "```\n" + lines.join("\n") + "\n```";

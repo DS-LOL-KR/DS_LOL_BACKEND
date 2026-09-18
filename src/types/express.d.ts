@@ -8,6 +8,9 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthenticatedUser;
+      // app.ts의 express.json({ verify })에서 채움 — 디스코드 인터랙션 서명 검증
+      // (discord.controller.ts)은 JSON으로 파싱되기 전의 원본 바이트가 필요해서 둠.
+      rawBody?: Buffer;
     }
   }
 }

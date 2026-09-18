@@ -7,6 +7,7 @@ import {
   createGroupSchema,
   joinGroupSchema,
   transferOwnerSchema,
+  updateDiscordGuildSchema,
   updateDiscordWebhookSchema,
 } from "./groups.schema"; // 각 라우트의 요청 바디 검증용 스키마
 // /groups/:id/tiers*, /groups/:id/matches*는 명세서상 각각 "티어", "내전" 카테고리라
@@ -41,6 +42,13 @@ groupsRouter.patch(
   requireGroupOwner,
   validate(updateDiscordWebhookSchema),
   groupsController.updateDiscordWebhook,
+);
+groupsRouter.patch(
+  "/:id/discord-guild",
+  authMiddleware,
+  requireGroupOwner,
+  validate(updateDiscordGuildSchema),
+  groupsController.updateDiscordGuild,
 );
 groupsRouter.delete("/:id/members/me", authMiddleware, groupsController.leaveGroup);
 groupsRouter.delete(

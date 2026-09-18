@@ -6,6 +6,7 @@ import type {
   CreateGroupInput,
   JoinGroupInput,
   TransferOwnerInput,
+  UpdateDiscordGuildInput,
   UpdateDiscordWebhookInput,
 } from "./groups.schema"; // 각 요청 바디의 형태를 명시하기 위해 사용
 
@@ -133,6 +134,27 @@ export async function updateDiscordWebhook(groupId: number, input: UpdateDiscord
     where: { id: groupId },
     data: { discordWebhookUrl: input.webhookUrl },
   });
+}
+
+// API 명세서: PATCH /groups/:id/discord-guild (그룹장 전용, requireGroupOwner
+// 미들웨어가 이미 걸러줌 — 여기서는 그룹 존재 여부와 중복 연동만 확인)
+export async function updateDiscordGuild(groupId: number, input: UpdateDiscordGuildInput) {
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group) {
+    throw new AppError(404, "그룹을 찾을 수 없습니다.");
+  }
+
+  try {
+    return await prisma.group.update({
+      where: { id: groupId },
+      data: { discordGuildId: input.guildId },
+    });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      throw new AppError(409, "이미 다른 그룹에 연동된 디스코드 서버입니다.");
+    }
+    throw err;
+  }
 }
 
 // 기능명세서: "그룹 키" — 초대 코드로 그룹 참가

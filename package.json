@@ -15,7 +15,8 @@
     "lint": "eslint src --ext .ts",
     "db:migrate": "prisma migrate dev",
     "db:studio": "prisma studio",
-    "db:seed": "prisma db seed"
+    "db:seed": "prisma db seed",
+    "discord:register-commands": "tsx scripts/registerDiscordCommands.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"
@@ -33,6 +34,7 @@
     "jsonwebtoken": "^9.0.2",
     "multer": "^2.2.0",
     "node-cron": "^3.0.3",
+    "tweetnacl": "^1.0.3",
     "winston": "^3.13.0",
     "zod": "^3.23.8"
   },

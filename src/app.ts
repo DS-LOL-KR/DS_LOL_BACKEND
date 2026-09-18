@@ -16,6 +16,7 @@ import { usersRouter } from "./modules/users/users.routes"; // API 명세서 "�
 import { gameAccountsRouter, gamesRouter } from "./modules/game-accounts/game-accounts.routes"; // API 명세서 "게임 계정 / 전적"
 import { groupsRouter } from "./modules/groups/groups.routes"; // API 명세서 "그룹" + tiers/matches 하위 라우트 포함
 import { matchesRouter } from "./modules/matches/matches.routes"; // API 명세서 "내전"
+import { discordRouter } from "./modules/discord/discord.routes"; // 디스코드 슬래시 명령어(/티어표 등) — 인증 없이 서명으로만 검증
 
 export function createApp(): Application {
   const app = express();
@@ -23,7 +24,16 @@ export function createApp(): Application {
   app.use(helmet());
   app.use(cors({ origin: env.CORS_ORIGIN, credentials: true }));
   app.use(cookieParser());
-  app.use(express.json());
+  // verify로 파싱 전 원본 바이트를 req.rawBody에 저장 — 디스코드 인터랙션 서명
+  // 검증(discord.controller.ts)이 JSON.parse된 값이 아니라 정확히 그 바이트를
+  // 요구해서 필요함. 다른 라우트엔 영향 없음(그냥 buf를 한 번 더 들고 있는 것뿐).
+  app.use(
+    express.json({
+      verify: (req: Request, _res: Response, buf: Buffer) => {
+        req.rawBody = buf;
+      },
+    }),
+  );
 
   app.get("/health", (_req: Request, res: Response) => {
     res.status(200).json({ status: "ok" });
@@ -49,6 +59,9 @@ export function createApp(): Application {
   app.use("/api/games", gamesRouter);
   app.use("/api/groups", groupsRouter); // /:id/tiers, /:id/matches 하위 라우트 포함
   app.use("/api/matches", matchesRouter);
+  // 디스코드가 직접 호출하는 엔드포인트라 authMiddleware를 안 씀 — 대신 컨트롤러
+  // 안에서 Ed25519 서명을 검증함(디스코드 공식 요구사항).
+  app.use("/api/discord", discordRouter);
 
   app.use(errorMiddleware);
 

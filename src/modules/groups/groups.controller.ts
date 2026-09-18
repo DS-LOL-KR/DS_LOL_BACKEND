@@ -83,6 +83,19 @@ export async function updateDiscordWebhook(req: Request, res: Response, next: Ne
   }
 }
 
+// PATCH /groups/:id/discord-guild
+export async function updateDiscordGuild(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const group = await groupsService.updateDiscordGuild(id, req.body);
+    res.status(200).json({ group });
+  } catch (err) {
+    next(err);
+  }
+}
+
 // POST /groups/join
 export async function joinGroup(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {

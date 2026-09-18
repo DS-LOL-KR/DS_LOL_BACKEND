@@ -33,3 +33,13 @@ export const updateDiscordWebhookSchema = z.object({
 });
 
 export type UpdateDiscordWebhookInput = z.infer<typeof updateDiscordWebhookSchema>;
+
+// API 명세서: PATCH /groups/:id/discord-guild
+// discordWebhookUrl(우리가 알림을 보내는 채널)과 반대 방향 연동 — 디스코드
+// 슬래시 명령어(/티어표 등)가 "이 명령어를 어느 그룹에서 보낸 건지" 찾는 데 씀.
+// null을 보내면 연동 해제.
+export const updateDiscordGuildSchema = z.object({
+  guildId: z.string().min(1).nullable(),
+});
+
+export type UpdateDiscordGuildInput = z.infer<typeof updateDiscordGuildSchema>;
