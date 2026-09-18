@@ -34,6 +34,23 @@ async function notifyGroupDiscord(groupId: number, content: string): Promise<voi
   await sendDiscordNotification(group.discordWebhookUrl, content);
 }
 
+// 명단(포지션+닉네임)을 디스코드 코드 블록(```)으로 감싸서 고정폭 정렬되게 만듦 —
+// 그냥 쉼표로 나열하던 것보다 한눈에 훑기 좋게 해달라는 요청(2026-09-18)으로 변경.
+function formatRosterBlock(participants: { nickname: string; assignedPosition: string | null }[]): string {
+  if (participants.length === 0) return "```\n-\n```";
+  const lines = participants.map((p) =>
+    p.assignedPosition ? `${p.assignedPosition.padEnd(4)} ${p.nickname}` : p.nickname,
+  );
+  return "```\n" + lines.join("\n") + "\n```";
+}
+
+// 내전 결과용 — 승/패 팀 각각 닉네임 옆에 이번 판 mmr 변동을 붙여서 코드 블록으로.
+function formatResultBlock(participants: { nickname: string; mmrChange: number }[]): string {
+  if (participants.length === 0) return "```\n-\n```";
+  const lines = participants.map((p) => `${p.nickname.padEnd(10)} ${p.mmrChange > 0 ? "+" : ""}${p.mmrChange}`);
+  return "```\n" + lines.join("\n") + "\n```";
+}
+
 async function findMatchOrThrow(matchId: number) {
   const match = await prisma.customMatch.findUnique({
     where: { id: matchId },
@@ -330,11 +347,13 @@ export async function generateTeams(matchId: number, input: GenerateTeamsInput) 
 
   const detail = await buildMatchDetail(await findMatchOrThrow(matchId));
 
-  const teamA = detail.participants.filter((p) => p.assignedTeam === "TEAM_A").map((p) => p.nickname).join(", ");
-  const teamB = detail.participants.filter((p) => p.assignedTeam === "TEAM_B").map((p) => p.nickname).join(", ");
+  const redRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_A");
+  const blueRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_B");
   void notifyGroupDiscord(
     match.groupId,
-    `🎮 팀이 구성됐어요!\n레드팀: ${teamA || "-"}\n블루팀: ${teamB || "-"}`,
+    `🎮 **팀이 구성됐어요!**\n\n` +
+      `🔴 레드팀\n${formatRosterBlock(redRoster)}\n` +
+      `🔵 블루팀\n${formatRosterBlock(blueRoster)}`,
   );
 
   return detail;
@@ -462,15 +481,13 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
 
   const winners = detail.participants.filter((p) => p.assignedTeam === input.winningTeam);
   const losers = detail.participants.filter((p) => p.assignedTeam && p.assignedTeam !== input.winningTeam);
-  const formatDelta = (delta: number | undefined) =>
-    delta === undefined ? "" : ` (${delta > 0 ? "+" : ""}${delta})`;
   // TEAM_A = 레드, TEAM_B = 블루 (2026-09-12부터 — 그 전엔 반대였음)
   const teamLabel = input.winningTeam === "TEAM_A" ? "레드팀" : "블루팀";
   void notifyGroupDiscord(
     match.groupId,
-    `🏆 내전 결과: ${teamLabel} 승리!\n` +
-      `승: ${winners.map((p) => p.nickname).join(", ") || "-"}${formatDelta(winners[0]?.mmrChange)}\n` +
-      `패: ${losers.map((p) => p.nickname).join(", ") || "-"}${formatDelta(losers[0]?.mmrChange)}`,
+    `🏆 **내전 결과 — ${teamLabel} 승리!**\n\n` +
+      `✅ 승리\n${formatResultBlock(winners)}\n` +
+      `❌ 패배\n${formatResultBlock(losers)}`,
   );
 
   return detail;
