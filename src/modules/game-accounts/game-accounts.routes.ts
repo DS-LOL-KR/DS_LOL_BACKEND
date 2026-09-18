@@ -14,9 +14,11 @@ meGameAccountsRouter.delete("/:id", gameAccountsController.deleteGameAccount);
 
 // app.ts에서 /api/game-accounts로 마운트
 // 원래 여기 authMiddleware가 빠져있어서 로그인 안 해도 아무 계정이나 조회/갱신
-// 가능한 구멍이 있었음 — 여기서 막음. (refresh는 서비스 계층에서 소유자만 되게
-// 추가로 한 번 더 체크함, stats 조회는 로그인만 하면 누구든 볼 수 있게 둠 —
-// 그룹 내 다른 사람 티어를 볼 수 있어야 하는 기능 특성상.)
+// 가능한 구멍이 있었음 — 여기서 막음. (refresh/match-history sync는 로그인만
+// 하면 소유자가 아니어도 호출 가능 — 다른 사람 프로필에서 "지금 갱신"을 대신
+// 눌러줄 수 있어야 한다는 요청으로 소유권 제한을 풀었음, 2026-09-19. stats
+// 조회도 원래부터 로그인만 하면 누구든 볼 수 있게 둠 — 그룹 내 다른 사람 티어를
+// 볼 수 있어야 하는 기능 특성상. preferred-position/연동 해제는 여전히 본인만.)
 export const gameAccountsRouter = Router();
 
 gameAccountsRouter.use(authMiddleware);

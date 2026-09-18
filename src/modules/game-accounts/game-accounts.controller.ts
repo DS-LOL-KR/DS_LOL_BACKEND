@@ -66,7 +66,7 @@ export async function refreshGameAccountStats(req: Request, res: Response, next:
     const id = parseId(req.params.id, next);
     if (id === null) return;
 
-    const stats = await gameAccountsService.refreshGameAccountStats(req.user!.id, id);
+    const stats = await gameAccountsService.refreshGameAccountStats(id);
     res.status(200).json({ stats });
   } catch (err) {
     next(err);
@@ -117,7 +117,7 @@ export async function syncMatchHistory(req: Request, res: Response, next: NextFu
       return;
     }
 
-    const result = await gameAccountsService.syncMatchHistory(req.user!.id, id, parsed.data);
+    const result = await gameAccountsService.syncMatchHistory(id, parsed.data);
     res.status(200).json(result);
   } catch (err) {
     next(err);

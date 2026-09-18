@@ -65,8 +65,11 @@ export async function listMyGameAccounts(userId: number) {
   });
 }
 
-// API 명세서: DELETE /users/me/game-accounts/:id
-async function findOwnedGameAccountOrThrow(userId: number, gameAccountId: number) {
+// 전적 갱신/동기화(refreshGameAccountStats, syncMatchHistory)는 소유자 체크 없이
+// 이걸 씀 — 그룹원 프로필 화면에서 "이 사람 대신 지금 갱신"을 눌러줄 수 있어야
+// 한다는 요청으로 소유권 제한을 풀었음(2026-09-19). stats 조회 자체가 이미
+// 로그인만 하면 누구든 가능하게 열려있던 것과 같은 방향.
+async function findGameAccountOrThrow(gameAccountId: number) {
   const account = await prisma.gameAccount.findUnique({
     where: { id: gameAccountId },
     include: { game: { select: { code: true } } },
@@ -75,6 +78,14 @@ async function findOwnedGameAccountOrThrow(userId: number, gameAccountId: number
   if (!account) {
     throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
   }
+
+  return account;
+}
+
+// API 명세서: DELETE /users/me/game-accounts/:id — 계정 연동 해제는 계속 본인만.
+async function findOwnedGameAccountOrThrow(userId: number, gameAccountId: number) {
+  const account = await findGameAccountOrThrow(gameAccountId);
+
   if (account.userId !== userId) {
     throw new AppError(403, "본인이 연결한 계정만 처리할 수 있습니다.");
   }
@@ -194,8 +205,10 @@ async function performRefresh(gameAccount: { id: number; puuid: string }) {
 
 // 기능명세서: "전적 자동 갱신" — "사용자가 직접 갱신할 수 있게 버튼 하나 만들 계획"
 // API 명세서: POST /game-accounts/:id/refresh (수동 버튼 쪽)
-export async function refreshGameAccountStats(userId: number, gameAccountId: number) {
-  const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
+// 로그인만 하면 누구든(본인 계정 아니어도) 호출 가능 — 다른 사람 프로필에서도
+// "지금 갱신"을 눌러줄 수 있게 함(2026-09-19).
+export async function refreshGameAccountStats(gameAccountId: number) {
+  const account = await findGameAccountOrThrow(gameAccountId);
   assertLolAccount(account);
   return performRefresh(account);
 }
@@ -290,12 +303,9 @@ function calculatePerformanceScore(
 // 기능명세서: "라인별 티어선정"의 재료 데이터 — 실제 매치 기록을 라이엇 Match-V5에서
 // 가져와 저장하고, user_position_stats(라인별 게임 수/승률)를 다시 계산함.
 // API 명세서: POST /game-accounts/:id/match-history/sync
-export async function syncMatchHistory(
-  userId: number,
-  gameAccountId: number,
-  input: SyncMatchHistoryInput,
-) {
-  const account = await findOwnedGameAccountOrThrow(userId, gameAccountId);
+// refreshGameAccountStats와 같은 이유로 소유자 체크 없음(2026-09-19).
+export async function syncMatchHistory(gameAccountId: number, input: SyncMatchHistoryInput) {
+  const account = await findGameAccountOrThrow(gameAccountId);
   assertLolAccount(account);
   return performMatchHistorySync(account, input.count);
 }
