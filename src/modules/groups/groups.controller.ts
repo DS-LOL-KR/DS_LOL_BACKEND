@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express"; // Express 컨트롤러 함수 시그니처에 필요한 타입
 import * as groupsService from "./groups.service"; // 실제 그룹 생성/조회/삭제 등 로직은 서비스 계층에 위임
 import { AppError } from "../../lib/AppError"; // :id/:userId가 숫자가 아닐 때 400으로 명확하게 막기 위해 사용
+import { buildDiscordBotInviteUrl } from "../discord/discord.service"; // "봇 초대 → 그룹 자동 연동" URL 생성
 
 function parseId(raw: string, next: NextFunction): number | null {
   const id = Number(raw);
@@ -91,6 +92,22 @@ export async function updateDiscordGuild(req: Request, res: Response, next: Next
 
     const group = await groupsService.updateDiscordGuild(id, req.body);
     res.status(200).json({ group });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// GET /groups/:id/discord-guild/invite-url
+// 프론트가 이 URL로 브라우저를 이동시키면(window.location.href), 사용자가
+// 디스코드에서 서버 선택/승인을 마치는 순간 discord.controller.ts의
+// handleOAuthCallback으로 자동 연동됨 — Guild ID를 직접 복사해서 입력할 필요 없음.
+export async function getDiscordInviteUrl(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const url = buildDiscordBotInviteUrl(id);
+    res.status(200).json({ url });
   } catch (err) {
     next(err);
   }

@@ -1,4 +1,7 @@
+import jwt from "jsonwebtoken"; // OAuth state 토큰 서명/검증(우리 서버가 발급한 요청인지 확인)에 사용
 import { prisma } from "../../config/prisma"; // groups 테이블에서 guild_id로 그룹을 찾기 위해 사용
+import { env } from "../../config/env"; // DISCORD_APPLICATION_ID, DISCORD_OAUTH_REDIRECT_URI, JWT_SECRET
+import { AppError } from "../../lib/AppError"; // 설정 누락/state 위조·만료를 명확한 에러로 표현하기 위해 사용
 import { listTiers } from "../tiers/tiers.service"; // /티어표
 import { listMatchesForGroup, getMatchById, formatResultBlock } from "../matches/matches.service"; // /내전결과 — 디스코드 웹후크 알림과 같은 포맷 재사용
 import type { TierEntry } from "../tiers/tiers.service";
@@ -14,6 +17,53 @@ const TIER_EMOJI: Record<1 | 2 | 3 | 4 | 5, string> = {
 
 async function findGroupByGuildId(guildId: string) {
   return prisma.group.findUnique({ where: { discordGuildId: guildId } });
+}
+
+// "봇 초대 → 그 서버가 자동으로 이 그룹에 연동" 흐름(2026-09-18 도입, Guild ID를
+// 직접 복사해서 입력하는 대신) — 이 URL로 이동해서 사용자가 서버를 선택/승인하면
+// 디스코드가 DISCORD_OAUTH_REDIRECT_URI로 되돌려주면서 guild_id를 같이 줌
+// (discord.controller.ts handleOAuthCallback). state에 groupId를 서명해서 담아둠 —
+// 그래야 콜백이 "누가 어느 그룹을 위해 시작한 요청인지" 위조 없이 알 수 있음
+// (요청 시점에 이미 requireGroupOwner로 그룹장인지 확인이 끝난 뒤라, state 자체가
+// 위조 불가능하면 콜백에서 다시 소유권을 확인할 필요가 없음).
+const DISCORD_OAUTH_STATE_EXPIRES_IN = "10m";
+
+interface DiscordOAuthState {
+  groupId: number;
+}
+
+export function buildDiscordBotInviteUrl(groupId: number): string {
+  if (!env.DISCORD_APPLICATION_ID || !env.DISCORD_OAUTH_REDIRECT_URI) {
+    throw new AppError(500, "디스코드 봇 연동이 아직 설정되지 않았습니다.");
+  }
+
+  const state = jwt.sign({ groupId } satisfies DiscordOAuthState, env.JWT_SECRET, {
+    expiresIn: DISCORD_OAUTH_STATE_EXPIRES_IN,
+  });
+
+  const params = new URLSearchParams({
+    client_id: env.DISCORD_APPLICATION_ID,
+    // bot: 서버에 봇 멤버로 들어감 / applications.commands: 슬래시 명령어를 그
+    // 서버에서 쓸 수 있게 함. 둘 다 있어야 /티어표 등이 실제로 동작함.
+    scope: "bot applications.commands",
+    // 슬래시 명령어 응답은 인터랙션 응답 자체로 처리돼서 봇에 채널 권한이 따로
+    // 필요 없음 — 최소 권한(0)으로 초대.
+    permissions: "0",
+    redirect_uri: env.DISCORD_OAUTH_REDIRECT_URI,
+    response_type: "code",
+    state,
+  });
+
+  return `https://discord.com/oauth2/authorize?${params.toString()}`;
+}
+
+export function verifyDiscordOAuthState(state: string): number {
+  try {
+    const payload = jwt.verify(state, env.JWT_SECRET) as DiscordOAuthState;
+    return payload.groupId;
+  } catch {
+    throw new AppError(400, "유효하지 않거나 만료된 요청입니다. 다시 시도해주세요.");
+  }
 }
 
 // 그룹 관리 화면에서 PATCH /groups/:id/discord-guild로 아직 연동을 안 해둔

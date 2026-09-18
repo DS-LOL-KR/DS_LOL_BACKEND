@@ -50,6 +50,12 @@ groupsRouter.patch(
   validate(updateDiscordGuildSchema),
   groupsController.updateDiscordGuild,
 );
+groupsRouter.get(
+  "/:id/discord-guild/invite-url",
+  authMiddleware,
+  requireGroupOwner,
+  groupsController.getDiscordInviteUrl,
+);
 groupsRouter.delete("/:id/members/me", authMiddleware, groupsController.leaveGroup);
 groupsRouter.delete(
   "/:id/members/:userId",

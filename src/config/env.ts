@@ -30,6 +30,10 @@ const envSchema = z.object({
   // 슬래시 명령어를 전역 등록하면 반영까지 최대 1시간 걸림 — 개발 중엔 이 길드
   // ID에만 즉시 등록하고 싶을 때 scripts/registerDiscordCommands.ts가 참조함.
   DISCORD_TEST_GUILD_ID: z.string().optional(),
+  // "봇 초대 → 그 서버가 자동으로 이 그룹에 연동"(2026-09-18 도입) OAuth2 콜백
+  // URL — Developer Portal의 OAuth2 > Redirects에 등록해둔 값과 정확히 같아야
+  // 함(구글 로그인의 GOOGLE_REDIRECT_URI와 같은 이유).
+  DISCORD_OAUTH_REDIRECT_URI: z.string().optional(),
 
   CORS_ORIGIN: z.string().default("http://localhost:5173"),
 

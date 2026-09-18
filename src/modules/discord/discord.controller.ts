@@ -1,8 +1,14 @@
 import type { Request, Response, NextFunction } from "express"; // Express 컨트롤러 함수 시그니처에 필요한 타입
 import nacl from "tweetnacl"; // 디스코드 인터랙션 요청의 Ed25519 서명을 검증하기 위해 사용
-import { env } from "../../config/env"; // DISCORD_PUBLIC_KEY
+import { env } from "../../config/env"; // DISCORD_PUBLIC_KEY, CORS_ORIGIN(프론트로 되돌려보낼 때 씀)
 import { logger } from "../../lib/logger"; // 알 수 없는 명령어/처리 실패를 로그로 남기기 위해 사용
-import { buildLatestMatchReply, buildPlayerStatsReply, buildTierTableReply } from "./discord.service";
+import { updateDiscordGuild } from "../groups/groups.service"; // OAuth 콜백에서 받은 guild_id를 그룹에 저장
+import {
+  buildLatestMatchReply,
+  buildPlayerStatsReply,
+  buildTierTableReply,
+  verifyDiscordOAuthState,
+} from "./discord.service";
 import type { DiscordInteraction, DiscordInteractionResponse } from "./discord.types";
 
 // 디스코드는 이 엔드포인트를 호출할 때마다 X-Signature-Ed25519/X-Signature-Timestamp
@@ -83,4 +89,33 @@ export async function handleInteraction(req: Request, res: Response, next: NextF
   } catch (err) {
     next(err);
   }
+}
+
+// GET /api/discord/oauth/callback
+// "봇 초대 → 자동으로 그룹에 연동" 흐름의 도착지. groups.controller.ts의
+// getDiscordInviteUrl로 만든 링크를 타고 사용자가 디스코드에서 서버 선택/승인을
+// 마치면 브라우저가 이 URL로 리다이렉트되어 옴 — 디스코드가 서버(HTTP)로 직접
+// 호출하는 게 아니라 "사용자 브라우저"가 오는 표준 OAuth2 리다이렉트라서
+// handleInteraction과 달리 서명 검증이 필요 없음(대신 우리가 발급한 state로 검증).
+// 성공/실패 모두 화면에 보여줄 게 있어야 해서 JSON이 아니라 프론트로 리다이렉트함.
+export async function handleOAuthCallback(req: Request, res: Response): Promise<void> {
+  const { state, guild_id: guildId } = req.query as { state?: string; guild_id?: string };
+
+  let groupId: number | null = null;
+  try {
+    if (!state) throw new Error("missing state");
+    groupId = verifyDiscordOAuthState(state);
+    if (!guildId) throw new Error("missing guild_id (사용자가 서버 선택 없이 취소했거나 scope가 빠짐)");
+
+    await updateDiscordGuild(groupId, { guildId });
+  } catch (err) {
+    logger.error("Discord OAuth callback failed", {
+      message: err instanceof Error ? err.message : String(err),
+    });
+    const target = groupId ? `${env.CORS_ORIGIN}/groups/${groupId}/manage` : `${env.CORS_ORIGIN}/groups`;
+    res.redirect(`${target}?discordLinkError=1`);
+    return;
+  }
+
+  res.redirect(`${env.CORS_ORIGIN}/groups/${groupId}/manage?discordLinked=1`);
 }
