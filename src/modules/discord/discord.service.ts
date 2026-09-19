@@ -110,7 +110,28 @@ export async function buildTierTableReply(guildId: string): Promise<string> {
   return `📊 **${group.name} 티어표**\n\n${sections.join("\n")}`;
 }
 
-// 기능명세서: "게임 계정 / 전적" 요약 디스코드 버전 — /전적 [닉네임]
+// 이 그룹 안에서 실제로 치른 내전(custom_matches) 기록만 뽑음 — 라이엇 랭크/일반전
+// 전적이 아니라 "우리끼리 내전에서 몇 승 몇 패 했는지"가 필요해서(2026-09-19 요청,
+// /전적이 라이엇 전적 위주였던 걸 내전 전적 위주로 바꿔달라는 문의) 직접 조회함.
+// tiers.service.ts의 customMatchWins/Losses(총합)만으로는 "최근에 뭘 했는지"가
+// 안 보여서, 매치별 승/패·MMR 변동까지 최신순으로 가져옴.
+async function getCustomMatchRecord(userId: number, groupId: number) {
+  const participations = await prisma.customMatchParticipant.findMany({
+    where: { userId, assignedTeam: { not: null }, match: { status: "FINISHED", groupId } },
+    select: { assignedTeam: true, mmrChange: true, match: { select: { winningTeam: true, createdAt: true } } },
+    orderBy: { match: { createdAt: "desc" } },
+  });
+
+  return participations.map((p) => ({
+    win: p.assignedTeam === p.match.winningTeam,
+    mmrChange: p.mmrChange,
+    playedAt: p.match.createdAt,
+  }));
+}
+
+const RECENT_MATCH_COUNT = 5;
+
+// 기능명세서: "내전 기록 조회" 개인별 요약 디스코드 버전 — /전적 [닉네임]
 export async function buildPlayerStatsReply(guildId: string, nicknameQuery: string): Promise<string> {
   const group = await findGroupByGuildId(guildId);
   if (!group) return NOT_LINKED_MESSAGE;
@@ -124,16 +145,26 @@ export async function buildPlayerStatsReply(guildId: string, nicknameQuery: stri
   }
 
   const main = rows[0];
+  const record = await getCustomMatchRecord(main.userId, group.id);
+  const wins = record.filter((r) => r.win).length;
+  const losses = record.length - wins;
+  const winRate = record.length > 0 ? Math.round((wins / record.length) * 1000) / 10 : null;
+
   const lines = [
-    `🏷️ 공식 티어: ${main.officialTier ?? "언랭크"}`,
-    `📈 내부 MMR: ${main.internalMmr} (${main.tier}티어)`,
-    `🎮 내전 전적: ${main.customMatchWins}승 ${main.customMatchLosses}패`,
+    `🏷️ 그룹 내부 티어: ${main.tier}티어 (MMR ${main.internalMmr})`,
+    `🎮 내전 전적: ${wins}승 ${losses}패${winRate !== null ? ` · 승률 ${winRate}%` : ""}`,
   ];
 
-  const laneRows = rows.filter((r) => r.position);
-  if (laneRows.length > 0) {
-    const laneLines = laneRows.map((r) => `${r.position.padEnd(4)} ${r.wins}승 ${r.losses}패 · MMR ${r.positionMmr}`);
-    lines.push("", "**라인별 전적**", "```\n" + laneLines.join("\n") + "\n```");
+  const recent = record.slice(0, RECENT_MATCH_COUNT);
+  if (recent.length > 0) {
+    const recentLines = recent.map((r) => {
+      const date = r.playedAt.toISOString().slice(5, 10).replace("-", "/");
+      const delta = r.mmrChange > 0 ? `+${r.mmrChange}` : `${r.mmrChange}`;
+      return `${date}  ${r.win ? "승" : "패"}  ${delta.padStart(4)}`;
+    });
+    lines.push("", `**최근 내전 (최대 ${RECENT_MATCH_COUNT}경기)**`, "```\n" + recentLines.join("\n") + "\n```");
+  } else {
+    lines.push("", "아직 이 그룹에서 끝난 내전이 없어요.");
   }
 
   return `👤 **${main.nickname}**\n\n${lines.join("\n")}`;
