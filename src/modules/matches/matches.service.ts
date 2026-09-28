@@ -2,7 +2,7 @@ import { prisma } from "../../config/prisma"; // custom_matches, custom_match_pa
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
 import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalancer"; // 실제 팀 배정 알고리즘
 import { CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr을 계산한 공식 버전 기록용
-import { rebuildInternalMmr, refreshStaleGameAccounts } from "../game-accounts/game-accounts.service"; // 매너점수 반영 시 internal_mmr 재계산 + 팀 구성 직전 오래된 계정 갱신
+import { rebuildInternalMmr } from "../game-accounts/game-accounts.service"; // 매너점수가 바뀔 때 internal_mmr을 기록 기준으로 다시 계산
 import { sendDiscordNotification } from "../../lib/discord"; // 팀 구성/내전 종료를 그룹 디스코드 채널에 알리기 위해 사용
 // 아래 각 요청의 바디 형태를 명시하기 위해 사용 (평가 생성 / 내전 생성 / 내전 종료 /
 // 팀 자동 구성 / 팀 수동 조정)
@@ -327,10 +327,6 @@ export async function generateTeams(matchId: number, input: GenerateTeamsInput) 
   }
 
   await assertGroupMembers(match.groupId, input.participantUserIds);
-
-  // 매일 자정 배치 대신, 팀을 짜는 이 순간에 참가자 중 6시간 넘게 안 갱신된 계정만
-  // 라이엇에서 최신 티어를 받아와 MMR에 반영함. 실패해도 기존 값으로 계속 진행.
-  await refreshStaleGameAccounts(input.participantUserIds, match.gameId);
 
   const participantStats = await Promise.all(
     input.participantUserIds.map((userId) => resolveParticipantStats(userId, match.gameId)),

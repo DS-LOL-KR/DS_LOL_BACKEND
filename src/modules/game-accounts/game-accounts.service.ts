@@ -12,7 +12,6 @@ import {
   type RiotMatchParticipant,
 } from "./riot.client"; // 실제 라이엇 API 호출
 import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
-import { logger } from "../../lib/logger"; // 팀 구성 직전 갱신 실패를 조용히 삼키지 않고 남기기 위해 사용
 import { calculateInternalMmr, performanceScoreToMmrDelta, CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr 재합산 공식 + 공식 버전 (matches.service.ts와 공유)
 import type {
   CreateGameAccountInput,
@@ -240,41 +239,6 @@ export async function refreshGameAccountStats(gameAccountId: number) {
   const account = await findGameAccountOrThrow(gameAccountId);
   assertLolAccount(account);
   return performRefresh(account);
-}
-
-// 이보다 오래전에 갱신된 계정만 팀 구성 직전에 다시 갱신함. "다시 추첨"을 연달아
-// 눌러도 라이엇 API를 또 부르지 않게 하려는 기준.
-const STALE_REFRESH_MS = 6 * 60 * 60 * 1000;
-// 한 번에 동시에 갱신할 계정 수. 계정당 라이엇 API 3회라 3개면 동시 9회 —
-// 개발용 키 한도(초당 20회)를 넘지 않게 묶어서 돌림.
-const STALE_REFRESH_CONCURRENCY = 3;
-
-// POST /matches/:id/teams/generate 직전에 호출(matches.service.ts). 매일 자정 배치
-// 대신, 티어가 실제로 필요한 순간에 그 내전 참가자 중 오래된 계정만 갱신함.
-// 라이엇 API가 실패해도 팀 구성은 막지 않음 — 실패한 계정은 저장돼 있던 값을 그대로 씀.
-export async function refreshStaleGameAccounts(userIds: number[], gameId: number): Promise<void> {
-  const staleBefore = new Date(Date.now() - STALE_REFRESH_MS);
-  const accounts = await prisma.gameAccount.findMany({
-    where: {
-      userId: { in: userIds },
-      gameId,
-      game: { code: "LOL" },
-      OR: [{ stats: null }, { stats: { refreshedAt: null } }, { stats: { refreshedAt: { lt: staleBefore } } }],
-    },
-  });
-
-  for (let i = 0; i < accounts.length; i += STALE_REFRESH_CONCURRENCY) {
-    const batch = accounts.slice(i, i + STALE_REFRESH_CONCURRENCY);
-    const results = await Promise.allSettled(batch.map((account) => performRefresh(account)));
-    results.forEach((result, index) => {
-      if (result.status === "rejected") {
-        logger.warn("Stale game account refresh failed before team generation", {
-          gameAccountId: batch[index].id,
-          message: result.reason instanceof Error ? result.reason.message : String(result.reason),
-        });
-      }
-    });
-  }
 }
 
 // API 명세서: PATCH /game-accounts/:id/preferred-position
