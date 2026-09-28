@@ -64,7 +64,8 @@ groupsRouter.delete(
   groupsController.removeMember,
 );
 
-// API 명세서: GET /groups/:id/tiers, GET /groups/:id/tiers?position=, POST /groups/:id/tiers/recalculate
+// API 명세서: GET /groups/:id/tiers, GET /groups/:id/tiers?position=, POST /groups/:id/tiers/recalculate,
+// POST /groups/:id/tiers/refresh
 groupsRouter.use("/:id/tiers", authMiddleware, requireGroupMember, groupTiersRouter);
 
 // API 명세서: POST/GET /groups/:id/matches

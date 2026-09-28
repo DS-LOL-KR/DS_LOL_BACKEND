@@ -1,6 +1,7 @@
 import { prisma } from "../../config/prisma"; // groups, group_members, game_accounts 등 테이블 접근
 import { AppError } from "../../lib/AppError"; // 그룹이 없을 때 404를 명확하게 표현하기 위해 사용
 import type { ListTiersQuery } from "./tiers.schema"; // GET /groups/:id/tiers 쿼리(position)의 형태를 명시하기 위해 사용
+import { refreshGroupGameAccounts } from "../game-accounts/game-accounts.service"; // 그룹원 전체 라이엇 전적/MMR 갱신
 
 export interface TierEntry {
   userId: number;
@@ -189,4 +190,19 @@ export async function recalculateTiers(groupId: number) {
   }
 
   return buildTierEntries(groupId, {});
+}
+
+// API 명세서: POST /groups/:id/tiers/refresh
+// 그룹원 전체의 라이엇 티어를 받아와 internal_mmr/라인 MMR을 다시 계산한 뒤, GET
+// /groups/:id/tiers와 같은 모양의 티어표에 갱신 결과(refresh: 성공/건너뜀/실패 수)를 붙여 돌려줌. 5분 안에 이미 갱신된
+// 계정은 건너뜀(refreshGroupGameAccounts).
+export async function refreshGroupTiers(groupId: number) {
+  const group = await prisma.group.findUnique({ where: { id: groupId } });
+  if (!group) {
+    throw new AppError(404, "그룹을 찾을 수 없습니다.");
+  }
+
+  const refresh = await refreshGroupGameAccounts(groupId, group.gameId);
+  const table = await buildTierEntries(groupId, {});
+  return { ...table, refresh };
 }

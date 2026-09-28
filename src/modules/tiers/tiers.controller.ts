@@ -43,3 +43,16 @@ export async function recalculateTiers(req: Request, res: Response, next: NextFu
     next(err);
   }
 }
+
+// POST /groups/:id/tiers/refresh
+export async function refreshGroupTiers(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const id = parseId(req.params.id, next);
+    if (id === null) return;
+
+    const result = await tiersService.refreshGroupTiers(id);
+    res.status(200).json(result);
+  } catch (err) {
+    next(err);
+  }
+}

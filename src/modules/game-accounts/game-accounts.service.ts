@@ -121,7 +121,7 @@ export async function deleteGameAccount(userId: number, gameAccountId: number): 
 }
 
 // 실제 갱신 로직 (소유권 체크 없이) — API 경로(refreshGameAccountStats)와
-// 배치 잡(refreshAllLinkedGameAccounts) 양쪽에서 공유해서 씀.
+// 그룹 전체 갱신(refreshGroupGameAccounts) 양쪽에서 공유해서 씀.
 // 솔로랭크 티어(League-V4) + 소환사 레벨/아이콘(Summoner-V4) + 챔피언 숙련도
 // (Champion-Mastery-V4)까지 한 번에 갱신. user_position_stats(라인별 전적)는 여기서
 // 안 건드림 — 그건 match-history/sync 쪽에서 실제 매치 기록을 기반으로 계산함
@@ -176,7 +176,7 @@ async function performRefresh(gameAccount: { id: number; userId: number; gameId:
   // v1 공식은 현재 값에 다시 섞는 구조라 "지금 갱신" 연타·공식 변경 감지를 위해
   // 티어 변경/mmr_version 게이트가 필요했는데(2026-08-28, 09-07), v2는 기록 재합산이라
   // 매번 다시 계산해도 값이 안 움직임. 그래서 게이트 없이 항상 재계산하고, 그 덕에
-  // v1에서 깎여 있던 계정도 다음 갱신(매일 자정 배치 포함) 때 자동으로 바로잡힘.
+  // v1에서 깎여 있던 계정도 다음 갱신(개인 "지금 갱신" 또는 그룹 전체 갱신) 때 바로잡힘.
   const internalMmr = await rebuildInternalMmr(gameAccount, officialTier, existingStats?.mannerScore ?? 3.5);
 
   const refreshedAt = new Date();
@@ -267,21 +267,39 @@ export async function updatePreferredPosition(
   });
 }
 
-// 기능명세서: "전적 자동 갱신" — "자동으로 전적 갱신을 하는데..." (자동 버전)
-// src/jobs/syncGameAccountStats.job.ts에서 매일 호출. 유저 컨텍스트가 없는
-// 배치 작업이라 소유권 체크 없이 LOL 계정 전체를 순회함. 계정 하나가 실패해도
-// (라이엇 API 에러 등) 나머지는 계속 진행하고, 실패 내역을 모아서 반환함.
-export async function refreshAllLinkedGameAccounts(): Promise<{
+// 그룹 전체 갱신에서 이 시간 안에 이미 갱신된 계정은 건너뜀 — 버튼을 연달아 눌러도
+// 라이엇 API를 반복 호출하지 않게 하려는 기준.
+const GROUP_REFRESH_SKIP_MS = 5 * 60 * 1000;
+
+// API 명세서: POST /groups/:id/tiers/refresh (tiers.service.ts에서 호출)
+// 매일 자정에 모든 계정을 돌던 배치(syncGameAccountStats.job.ts)를 없애고, 그룹
+// 안에서 버튼 하나로 그룹원 전체의 티어/MMR을 한 번에 갱신하게 바꿈(2026-09-28).
+// 계정 하나가 실패해도(라이엇 API 에러 등) 나머지는 계속 진행하고, 실패 내역을
+// 모아서 반환함.
+export async function refreshGroupGameAccounts(
+  groupId: number,
+  gameId: number,
+): Promise<{
   total: number;
   succeeded: number;
+  skipped: number;
   failed: number;
   errors: Array<{ gameAccountId: number; message: string }>;
 }> {
-  const accounts = await prisma.gameAccount.findMany({ where: { game: { code: "LOL" } } });
+  const accounts = await prisma.gameAccount.findMany({
+    where: { gameId, game: { code: "LOL" }, user: { groupMemberships: { some: { groupId } } } },
+    include: { stats: { select: { refreshedAt: true } } },
+  });
+  const recentlyRefreshedAfter = Date.now() - GROUP_REFRESH_SKIP_MS;
   const errors: Array<{ gameAccountId: number; message: string }> = [];
   let succeeded = 0;
+  let skipped = 0;
 
   for (const account of accounts) {
+    if (account.stats?.refreshedAt && account.stats.refreshedAt.getTime() > recentlyRefreshedAfter) {
+      skipped += 1;
+      continue;
+    }
     try {
       await performRefresh(account);
       succeeded += 1;
@@ -296,7 +314,7 @@ export async function refreshAllLinkedGameAccounts(): Promise<{
     await sleep(300);
   }
 
-  return { total: accounts.length, succeeded, failed: errors.length, errors };
+  return { total: accounts.length, succeeded, skipped, failed: errors.length, errors };
 }
 
 // 같은 라인(teamPosition) 상대(다른 팀)와 KDA/분당CS/분당딜량을 비교해 -50~50
