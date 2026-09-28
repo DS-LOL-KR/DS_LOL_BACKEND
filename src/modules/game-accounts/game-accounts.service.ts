@@ -12,7 +12,7 @@ import {
   type RiotMatchParticipant,
 } from "./riot.client"; // 실제 라이엇 API 호출
 import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
-import { recalculateInternalMmr, CURRENT_MMR_VERSION } from "../../lib/mmr"; // official_tier 기반 internal_mmr 계산 + 공식 버전 (tiers.service.ts와 공유)
+import { calculateInternalMmr, performanceScoreToMmrDelta, CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr 재합산 공식 + 공식 버전 (matches.service.ts와 공유)
 import type {
   CreateGameAccountInput,
   ListMatchHistoryQuery,
@@ -130,7 +130,38 @@ export async function deleteGameAccount(userId: number, gameAccountId: number): 
 // 챌린저가 똑같이 1000으로 시작하는 문제가 없어서, 여기서도 tiers.service.ts의 그룹
 // 재선정과 같은 공식으로 매번 갱신함(2026-08-27 추가 — 그 전엔 group 재선정을 수동으로
 // 눌러야만 반영돼서, 계정을 갓 연동한 사람은 실제 티어와 무관하게 계속 1000으로 보였음).
-async function performRefresh(gameAccount: { id: number; puuid: string }) {
+// internal_mmr을 저장된 기록(종료된 내전의 mmr_change + 동기화된 매치의
+// performanceScore)과 공식 티어/매너 점수만으로 처음부터 다시 계산함(lib/mmr.ts v2).
+// 이전 internal_mmr을 입력으로 쓰지 않아서 몇 번을 호출해도 같은 값이 나옴 —
+// performRefresh(티어 반영)와 matches.service.ts(매너 평가 반영) 양쪽에서 씀.
+export async function rebuildInternalMmr(
+  gameAccount: { id: number; userId: number; gameId: number },
+  officialTier: string | null,
+  mannerScore: number,
+): Promise<number> {
+  const [customMatchSum, scoredMatches] = await Promise.all([
+    prisma.customMatchParticipant.aggregate({
+      where: { userId: gameAccount.userId, match: { gameId: gameAccount.gameId, status: "FINISHED" } },
+      _sum: { mmrChange: true },
+    }),
+    prisma.matchHistoryParticipant.findMany({
+      where: { gameAccountId: gameAccount.id, performanceScore: { not: null } },
+      select: { performanceScore: true },
+    }),
+  ]);
+
+  return calculateInternalMmr({
+    officialTier,
+    mannerScore,
+    customMatchMmrChangeSum: customMatchSum._sum.mmrChange ?? 0,
+    performanceMmrDeltaSum: scoredMatches.reduce(
+      (sum, m) => sum + performanceScoreToMmrDelta(m.performanceScore ?? 0),
+      0,
+    ),
+  });
+}
+
+async function performRefresh(gameAccount: { id: number; userId: number; gameId: number; puuid: string }) {
   const gameAccountId = gameAccount.id;
 
   const [entries, summoner, masteries, existingStats] = await Promise.all([
@@ -142,22 +173,11 @@ async function performRefresh(gameAccount: { id: number; puuid: string }) {
 
   const soloQueue = entries.find((entry) => entry.queueType === "RANKED_SOLO_5x5");
   const officialTier = soloQueue ? `${soloQueue.tier} ${soloQueue.rank}` : null;
-  // "지금 갱신"을 연타해도 internal_mmr이 계속 움직이던 버그 수정 (2026-08-28):
-  // recalculateInternalMmr은 현재 internal_mmr을 70% 가중치로 다시 섞어넣는 구조라,
-  // 공식 티어가 실제로 안 바뀌었는데도 매번 호출하면 "목표값" 쪽으로 조금씩 더
-  // 수렴해가는 것처럼 계속 값이 변함. 티어가 실제로 바뀌었을 때(승급/강등)나
-  // 계정을 처음 연동했을 때만 다시 계산하고, 그 외엔 기존 값을 그대로 둠.
-  // 다만 이 게이트만 있으면 가중치 공식 자체를 바꿔도(예: 20/70/10 조정) 이미
-  // 저장된 계정들은 티어가 그대로인 한 영원히 옛날 공식값에 머무름 — "지금 갱신"을
-  // 몇 번을 눌러도 안 바뀐다는 문의로 확인됨. mmr_version(계정에 마지막으로 적용된
-  // 공식 버전)을 CURRENT_MMR_VERSION과 비교해서, 공식이 바뀐 계정도 감지해 재계산함
-  // (2026-09-07 도입).
-  const officialTierChanged = existingStats && existingStats.officialTier !== officialTier;
-  const isVersionOutdated = !existingStats || existingStats.mmrVersion !== CURRENT_MMR_VERSION;
-  const shouldRecalculate = !existingStats || officialTierChanged || isVersionOutdated;
-  const internalMmr = shouldRecalculate
-    ? recalculateInternalMmr(officialTier, existingStats?.internalMmr ?? 1000, existingStats?.mannerScore ?? 3.5)
-    : existingStats.internalMmr;
+  // v1 공식은 현재 값에 다시 섞는 구조라 "지금 갱신" 연타·공식 변경 감지를 위해
+  // 티어 변경/mmr_version 게이트가 필요했는데(2026-08-28, 09-07), v2는 기록 재합산이라
+  // 매번 다시 계산해도 값이 안 움직임. 그래서 게이트 없이 항상 재계산하고, 그 덕에
+  // v1에서 깎여 있던 계정도 다음 갱신(매일 자정 배치 포함) 때 자동으로 바로잡힘.
+  const internalMmr = await rebuildInternalMmr(gameAccount, officialTier, existingStats?.mannerScore ?? 3.5);
 
   const stats = await prisma.userGameStat.upsert({
     where: { gameAccountId },
@@ -270,12 +290,6 @@ export async function refreshAllLinkedGameAccounts(): Promise<{
 
   return { total: accounts.length, succeeded, failed: errors.length, errors };
 }
-
-// performanceScore(-50~50) 한 점당 매치 하나에서 internal_mmr에 반영할 양. 0.2면
-// 매치당 최대 ±10 정도만 움직여서, 내전(custom match) Elo 변동폭(K=32, 보통
-// ±20~30)보다는 작게 — 실제 랭크/일반전은 "참고 자료"이고 우리 내전 결과가
-// 더 크게 반영되게 하려는 의도.
-const PERFORMANCE_TO_MMR_FACTOR = 0.2;
 
 // 같은 라인(teamPosition) 상대(다른 팀)와 KDA/분당CS/분당딜량을 비교해 -50~50
 // 점수로 환산. 못 찾으면(아람 등 teamPosition 없음, 중복 포지션) null.
@@ -393,7 +407,7 @@ export async function performMatchHistorySync(
     // 적 없는 매치"임이 보장돼서, 재동기화해도 같은 매치가 또 반영되진 않음 —
     // "지금 갱신" 연타 버그와 같은 재귀적 드리프트 없이 매치당 딱 한 번만 적용됨.
     if (performanceScore !== null) {
-      const mmrDelta = Math.round(performanceScore * PERFORMANCE_TO_MMR_FACTOR);
+      const mmrDelta = performanceScoreToMmrDelta(performanceScore);
       if (mmrDelta !== 0) {
         await prisma.userGameStat.upsert({
           where: { gameAccountId },

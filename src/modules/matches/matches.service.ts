@@ -1,7 +1,8 @@
 import { prisma } from "../../config/prisma"; // custom_matches, custom_match_participants 등 테이블 접근
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
 import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalancer"; // 실제 팀 배정 알고리즘
-import { recalculateInternalMmr, CURRENT_MMR_VERSION } from "../../lib/mmr"; // 매너점수가 바뀔 때 internal_mmr에도 반영하기 위해 사용
+import { CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr을 계산한 공식 버전 기록용
+import { rebuildInternalMmr } from "../game-accounts/game-accounts.service"; // 매너점수가 바뀔 때 internal_mmr을 기록 기준으로 다시 계산
 import { sendDiscordNotification } from "../../lib/discord"; // 팀 구성/내전 종료를 그룹 디스코드 채널에 알리기 위해 사용
 // 아래 각 요청의 바디 형태를 명시하기 위해 사용 (평가 생성 / 내전 생성 / 내전 종료 /
 // 팀 자동 구성 / 팀 수동 조정)
@@ -524,11 +525,9 @@ export async function duplicateMatchTeams(matchId: number) {
 }
 
 // 대상 유저가 이 게임(gameId)에서 받은 모든 평가의 평균을 user_game_stats.manner_score에 반영.
-// internal_mmr도 여기서 같이 반영함(2026-08-28) — recalculateInternalMmr은 매너점수가
-// 실제로 바뀔 때 딱 한 번만 적용돼야 하는데, 예전엔 game-accounts.service.ts(지금 갱신)나
-// tiers.service.ts(티어 재선정)를 누를 때마다 매번 다시 섞여 들어가서 아무것도 안
-// 바뀌었는데도 internal_mmr이 계속 움직이는 버그가 있었음. 매너점수가 바뀌는 유일한
-// 지점인 여기서만 반영하도록 정리.
+// internal_mmr도 여기서 같이 반영함 — v1 공식(현재 값에 70% 섞기)은 평가가 한 건
+// 들어올 때마다 값이 10%씩 깎였는데(2026-09-28 발견), v2는 기록 전체 재합산
+// (rebuildInternalMmr)이라 매너 점수가 바뀐 만큼만 움직임.
 async function recomputeMannerScore(targetUserId: number, gameId: number): Promise<void> {
   const evaluations = await prisma.userEvaluation.findMany({
     where: { targetId: targetUserId, match: { gameId } },
@@ -544,11 +543,7 @@ async function recomputeMannerScore(targetUserId: number, gameId: number): Promi
   });
   if (!gameAccount) return;
 
-  const internalMmr = recalculateInternalMmr(
-    gameAccount.stats?.officialTier ?? null,
-    gameAccount.stats?.internalMmr ?? 1000,
-    average,
-  );
+  const internalMmr = await rebuildInternalMmr(gameAccount, gameAccount.stats?.officialTier ?? null, average);
 
   await prisma.userGameStat.upsert({
     where: { gameAccountId: gameAccount.id },
