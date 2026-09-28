@@ -12,6 +12,7 @@ import {
   type RiotMatchParticipant,
 } from "./riot.client"; // 실제 라이엇 API 호출
 import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
+import { logger } from "../../lib/logger"; // 팀 구성 직전 갱신 실패를 조용히 삼키지 않고 남기기 위해 사용
 import { calculateInternalMmr, performanceScoreToMmrDelta, CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr 재합산 공식 + 공식 버전 (matches.service.ts와 공유)
 import type {
   CreateGameAccountInput,
@@ -179,6 +180,7 @@ async function performRefresh(gameAccount: { id: number; userId: number; gameId:
   // v1에서 깎여 있던 계정도 다음 갱신(매일 자정 배치 포함) 때 자동으로 바로잡힘.
   const internalMmr = await rebuildInternalMmr(gameAccount, officialTier, existingStats?.mannerScore ?? 3.5);
 
+  const refreshedAt = new Date();
   const stats = await prisma.userGameStat.upsert({
     where: { gameAccountId },
     update: {
@@ -187,6 +189,7 @@ async function performRefresh(gameAccount: { id: number; userId: number; gameId:
       mmrVersion: CURRENT_MMR_VERSION,
       summonerLevel: summoner.summonerLevel,
       profileIconId: summoner.profileIconId,
+      refreshedAt,
     },
     create: {
       gameAccountId,
@@ -195,8 +198,14 @@ async function performRefresh(gameAccount: { id: number; userId: number; gameId:
       mmrVersion: CURRENT_MMR_VERSION,
       summonerLevel: summoner.summonerLevel,
       profileIconId: summoner.profileIconId,
+      refreshedAt,
     },
   });
+
+  // position_mmr은 internal_mmr을 기준점으로 계산되는데 지금까진 매치 동기화 때만
+  // 다시 계산돼서, 티어가 바뀌거나 MMR 공식이 바뀌어도(v2) 팀 구성이 주로 쓰는
+  // 라인 MMR에는 반영이 안 됐음. DB만 읽는 계산이라 여기서 같이 돌림.
+  await recomputePositionStats(gameAccountId);
 
   // 상위 N개만 유지 — 예전엔 top 3였다가 이번엔 밀려난 챔피언이 테이블에 계속
   // 남아있으면 안 되므로, 매번 이 계정의 기존 기록을 전부 지우고 최신 top N으로
@@ -231,6 +240,41 @@ export async function refreshGameAccountStats(gameAccountId: number) {
   const account = await findGameAccountOrThrow(gameAccountId);
   assertLolAccount(account);
   return performRefresh(account);
+}
+
+// 이보다 오래전에 갱신된 계정만 팀 구성 직전에 다시 갱신함. "다시 추첨"을 연달아
+// 눌러도 라이엇 API를 또 부르지 않게 하려는 기준.
+const STALE_REFRESH_MS = 6 * 60 * 60 * 1000;
+// 한 번에 동시에 갱신할 계정 수. 계정당 라이엇 API 3회라 3개면 동시 9회 —
+// 개발용 키 한도(초당 20회)를 넘지 않게 묶어서 돌림.
+const STALE_REFRESH_CONCURRENCY = 3;
+
+// POST /matches/:id/teams/generate 직전에 호출(matches.service.ts). 매일 자정 배치
+// 대신, 티어가 실제로 필요한 순간에 그 내전 참가자 중 오래된 계정만 갱신함.
+// 라이엇 API가 실패해도 팀 구성은 막지 않음 — 실패한 계정은 저장돼 있던 값을 그대로 씀.
+export async function refreshStaleGameAccounts(userIds: number[], gameId: number): Promise<void> {
+  const staleBefore = new Date(Date.now() - STALE_REFRESH_MS);
+  const accounts = await prisma.gameAccount.findMany({
+    where: {
+      userId: { in: userIds },
+      gameId,
+      game: { code: "LOL" },
+      OR: [{ stats: null }, { stats: { refreshedAt: null } }, { stats: { refreshedAt: { lt: staleBefore } } }],
+    },
+  });
+
+  for (let i = 0; i < accounts.length; i += STALE_REFRESH_CONCURRENCY) {
+    const batch = accounts.slice(i, i + STALE_REFRESH_CONCURRENCY);
+    const results = await Promise.allSettled(batch.map((account) => performRefresh(account)));
+    results.forEach((result, index) => {
+      if (result.status === "rejected") {
+        logger.warn("Stale game account refresh failed before team generation", {
+          gameAccountId: batch[index].id,
+          message: result.reason instanceof Error ? result.reason.message : String(result.reason),
+        });
+      }
+    });
+  }
 }
 
 // API 명세서: PATCH /game-accounts/:id/preferred-position

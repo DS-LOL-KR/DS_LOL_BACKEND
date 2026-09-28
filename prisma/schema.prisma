@@ -91,6 +91,10 @@ model UserGameStat {
   // 가중치 공식이 바뀌면 이 값이 낮은 계정만 다음 갱신 때 한 번 재계산됨 — 티어가
   // 그대로여도 공식 개편은 감지되게 하려는 목적(2026-09-07 도입).
   mmrVersion     Int      @default(1) @map("mmr_version")
+  // 마지막으로 라이엇 API에서 티어/레벨/숙련도를 받아온 시각(performRefresh). updatedAt은
+  // 내전 결과·매너 평가로 internal_mmr만 바뀌어도 갱신돼서 이 용도로 못 씀 — 팀 구성
+  // 직전 "오래된 계정만 갱신" 판단에 사용(2026-09-28 도입).
+  refreshedAt    DateTime? @map("refreshed_at")
   updatedAt      DateTime @default(now()) @updatedAt @map("updated_at")
 
   gameAccount GameAccount @relation(fields: [gameAccountId], references: [id])
