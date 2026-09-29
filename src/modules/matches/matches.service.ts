@@ -320,7 +320,13 @@ async function buildMatchDetail(match: Awaited<ReturnType<typeof findMatchOrThro
 // API 명세서: POST /matches/:id/teams/generate
 // FINISHED된 내전은 재구성 불가. WAITING/MATCHED 상태면 (재추첨 포함) 허용 —
 // 기존 참가자 배정을 지우고 새로 계산해서 덮어씀.
-export async function generateTeams(matchId: number, input: GenerateTeamsInput) {
+// options.notifyDiscord: 디스코드 /내전모집의 [확정]으로 호출될 때는 모집 메시지
+// 자체가 팀 결과로 바뀌어서, 같은 채널에 웹후크 알림까지 가면 중복이라 끔.
+export async function generateTeams(
+  matchId: number,
+  input: GenerateTeamsInput,
+  options: { notifyDiscord?: boolean } = {},
+) {
   const match = await findMatchOrThrow(matchId);
   if (match.status === "FINISHED") {
     throw new AppError(409, "이미 종료된 내전은 팀을 다시 구성할 수 없습니다.");
@@ -350,14 +356,16 @@ export async function generateTeams(matchId: number, input: GenerateTeamsInput) 
 
   const detail = await buildMatchDetail(await findMatchOrThrow(matchId));
 
-  const redRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_A");
-  const blueRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_B");
-  void notifyGroupDiscord(
-    match.groupId,
-    `🎮 **팀이 구성됐어요!**\n\n` +
-      `🔴 레드팀\n${formatRosterBlock(redRoster)}\n` +
-      `🔵 블루팀\n${formatRosterBlock(blueRoster)}`,
-  );
+  if (options.notifyDiscord !== false) {
+    const redRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_A");
+    const blueRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_B");
+    void notifyGroupDiscord(
+      match.groupId,
+      `🎮 **팀이 구성됐어요!**\n\n` +
+        `🔴 레드팀\n${formatRosterBlock(redRoster)}\n` +
+        `🔵 블루팀\n${formatRosterBlock(blueRoster)}`,
+    );
+  }
 
   return detail;
 }

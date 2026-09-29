@@ -1,6 +1,7 @@
 import type { Request, Response, NextFunction } from "express"; // Express 컨트롤러 함수 시그니처에 필요한 타입
 import * as usersService from "./users.service"; // 실제 프로필 조회/수정 로직은 서비스 계층에 위임
 import { AppError } from "../../lib/AppError"; // :id가 숫자가 아닐 때 400으로 명확하게 막기 위해 사용
+import { linkDiscordAccount, unlinkDiscordAccount } from "../discord/discordLink.service"; // 디스코드 계정 연결/해제
 
 // GET /users/me
 export async function getMe(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -50,6 +51,26 @@ export async function updateProfileImage(req: Request, res: Response, next: Next
     }
 
     const user = await usersService.updateProfileImage(req.user!.id, req.file);
+    res.status(200).json({ user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// POST /users/me/discord
+export async function linkDiscord(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const user = await linkDiscordAccount(req.user!.id, req.body.token);
+    res.status(200).json({ user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// DELETE /users/me/discord
+export async function unlinkDiscord(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const user = await unlinkDiscordAccount(req.user!.id);
     res.status(200).json({ user });
   } catch (err) {
     next(err);

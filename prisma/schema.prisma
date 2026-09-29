@@ -26,6 +26,9 @@ model User {
   nickname         String
   profileImageUrl  String?  @map("profile_image_url")
   bio              String?
+  // 디스코드 유저 ID(스노우플레이크). 디스코드 닉네임은 서버마다 다르고 바뀔 수 있어서,
+  // 디스코드 모집 버튼을 누른 사람이 우리 유저 누구인지는 이 값으로만 찾음(2026-09-29).
+  discordUserId    String?  @unique @map("discord_user_id")
   createdAt        DateTime @default(now()) @map("created_at")
 
   gameAccounts        GameAccount[]
@@ -264,6 +267,8 @@ model CustomMatch {
   createdBy    Int          @map("created_by")
   status       MatchStatus  @default(WAITING)
   winningTeam  Team?        @map("winning_team")
+  // 디스코드 /내전모집으로 만든 내전의 모집 인원(예: 10, 6). 웹에서 만든 내전은 null.
+  recruitSize  Int?         @map("recruit_size")
   createdAt    DateTime     @default(now()) @map("created_at")
 
   group        Group                    @relation(fields: [groupId], references: [id])

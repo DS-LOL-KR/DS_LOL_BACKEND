@@ -9,6 +9,7 @@ import {
   buildTierTableReply,
   verifyDiscordOAuthState,
 } from "./discord.service";
+import { DEFAULT_RECRUIT_SIZE, handleRecruitButton, startRecruit } from "./discordRecruit.service"; // /내전모집 + 모집 버튼
 import type { DiscordInteraction, DiscordInteractionResponse } from "./discord.types";
 
 // 디스코드는 이 엔드포인트를 호출할 때마다 X-Signature-Ed25519/X-Signature-Timestamp
@@ -41,6 +42,16 @@ function getOptionValue(data: DiscordInteraction["data"], name: string): string 
   return typeof option?.value === "string" ? option.value : undefined;
 }
 
+function getNumberOptionValue(data: DiscordInteraction["data"], name: string): number | undefined {
+  const option = data?.options?.find((o) => o.name === name);
+  return typeof option?.value === "number" ? option.value : undefined;
+}
+
+// 서버 안에서 누르면 member.user, DM이면 user로 옴
+function getDiscordUserId(body: DiscordInteraction): string | undefined {
+  return body.member?.user.id ?? body.user?.id;
+}
+
 // API 명세서 없음(디스코드 쪽 계약) — POST /api/discord/interactions
 // 디스코드 Developer Portal의 "Interactions Endpoint URL"에 이 경로를 등록해두면
 // 슬래시 명령어 입력마다 디스코드가 이 엔드포인트로 호출함.
@@ -64,6 +75,14 @@ export async function handleInteraction(req: Request, res: Response, next: NextF
     if (body.type === 2) {
       const guildId = body.guild_id;
       const commandName = body.data?.name;
+      const discordUserId = getDiscordUserId(body);
+
+      // /내전모집은 버튼이 붙은 메시지를 통째로 돌려줘서 아래 content 한 줄짜리 흐름과 따로 처리
+      if (commandName === "내전모집" && guildId && discordUserId) {
+        const size = getNumberOptionValue(body.data, "인원") ?? DEFAULT_RECRUIT_SIZE;
+        res.status(200).json(await startRecruit(guildId, discordUserId, size));
+        return;
+      }
 
       let content: string;
       if (!guildId) {
@@ -84,7 +103,18 @@ export async function handleInteraction(req: Request, res: Response, next: NextF
       return;
     }
 
-    // 우리가 다루지 않는 인터랙션 타입(예: 버튼 등 컴포넌트) — 조용히 PONG만.
+    // type 3(MESSAGE_COMPONENT) — /내전모집 메시지의 버튼 클릭.
+    if (body.type === 3) {
+      const guildId = body.guild_id;
+      const discordUserId = getDiscordUserId(body);
+      const customId = body.data?.custom_id;
+      if (guildId && discordUserId && customId?.startsWith("recruit:")) {
+        res.status(200).json(await handleRecruitButton(guildId, discordUserId, customId));
+        return;
+      }
+    }
+
+    // 우리가 다루지 않는 인터랙션 — 조용히 PONG만.
     res.status(200).json({ type: 1 } satisfies DiscordInteractionResponse);
   } catch (err) {
     next(err);

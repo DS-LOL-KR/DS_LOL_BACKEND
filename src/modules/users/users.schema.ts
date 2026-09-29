@@ -13,3 +13,10 @@ export type UpdateMeInput = z.infer<typeof updateMeSchema>;
 // API 명세서: POST /users/me/profile-image
 // TODO: multipart/form-data 업로드이므로 zod로 바디를 검증하지 않고 multer 등
 // 파일 업로드 미들웨어가 필요함. 스토리지(S3 등) 연동 방식도 정해야 함.
+
+// API 명세서: POST /users/me/discord — 디스코드 봇이 준 연결 링크의 token
+export const linkDiscordSchema = z.object({
+  token: z.string().min(1),
+});
+
+export type LinkDiscordInput = z.infer<typeof linkDiscordSchema>;

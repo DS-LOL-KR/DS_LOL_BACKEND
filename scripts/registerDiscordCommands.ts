@@ -1,4 +1,4 @@
-// 디스코드 슬래시 명령어(/티어표, /전적, /내전결과)를 디스코드 서버에 등록하는
+// 디스코드 슬래시 명령어(/티어표, /전적, /내전결과, /내전모집)를 디스코드 서버에 등록하는
 // 1회성 스크립트. `npm run discord:register-commands`로 실행.
 //
 // DISCORD_TEST_GUILD_ID가 .env에 있으면 그 서버에만 즉시 등록(개발용 — 반영이
@@ -7,8 +7,9 @@
 import axios from "axios";
 import { env } from "../src/config/env";
 
-// type 3 = STRING (디스코드 애플리케이션 커맨드 옵션 타입)
+// 디스코드 애플리케이션 커맨드 옵션 타입: 3 = STRING, 4 = INTEGER
 const STRING_OPTION_TYPE = 3;
+const INTEGER_OPTION_TYPE = 4;
 
 const commands = [
   {
@@ -30,6 +31,20 @@ const commands = [
   {
     name: "내전결과",
     description: "가장 최근에 끝난 내전 결과를 보여줘요",
+  },
+  {
+    name: "내전모집",
+    description: "내전 인원을 모집하고, 확정하면 바로 팀을 짜줘요",
+    options: [
+      {
+        name: "인원",
+        description: "모집 인원 (기본 10명)",
+        type: INTEGER_OPTION_TYPE,
+        required: false,
+        min_value: 2,
+        max_value: 10,
+      },
+    ],
   },
 ];
 
