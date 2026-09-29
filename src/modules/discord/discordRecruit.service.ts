@@ -1,7 +1,8 @@
 import { Prisma } from "@prisma/client"; // 같은 사람이 [참가]를 동시에 두 번 눌렀을 때(P2002)를 구분하기 위해 사용
 import { prisma } from "../../config/prisma"; // groups/users/custom_matches 조회·저장
 import { AppError } from "../../lib/AppError"; // 팀 구성/삭제에서 던진 의도된 에러를 디스코드 안내 메시지로 바꾸기 위해 사용
-import { deleteMatch, formatRosterBlock, generateTeams } from "../matches/matches.service"; // [확정] 팀 구성, [모집 취소] 삭제 — 웹과 같은 로직 재사용
+import { deleteMatch, generateTeams } from "../matches/matches.service"; // [확정] 팀 구성, [모집 취소] 삭제 — 웹과 같은 로직 재사용
+import { buildTeamsEmbed, EMBED_COLOR, fieldValue, type DiscordEmbed } from "../../lib/discordEmbeds"; // 임베드 디자인(웹후크 알림과 공용)
 import { buildDiscordLinkUrl } from "./discordLink.service"; // 연결 안 된 사람에게 줄 계정 연결 링크
 import {
   DISCORD_EPHEMERAL_FLAG,
@@ -37,26 +38,48 @@ export function buildRecruitButtons(matchId: number, isFull: boolean): DiscordAc
     {
       type: 1,
       components: [
-        { type: 2, style: 1, label: "참가", custom_id: `recruit:join:${matchId}`, disabled: isFull },
-        { type: 2, style: 2, label: "나가기", custom_id: `recruit:leave:${matchId}` },
-        { type: 2, style: 3, label: "확정", custom_id: `recruit:confirm:${matchId}` },
+        { type: 2, style: 1, label: "참가", emoji: { name: "🙋" }, custom_id: `recruit:join:${matchId}`, disabled: isFull },
+        { type: 2, style: 2, label: "나가기", emoji: { name: "🚪" }, custom_id: `recruit:leave:${matchId}` },
+        { type: 2, style: 3, label: "확정", emoji: { name: "✅" }, custom_id: `recruit:confirm:${matchId}` },
         { type: 2, style: 4, label: "모집 취소", custom_id: `recruit:cancel:${matchId}` },
       ],
     },
   ];
 }
 
-export function buildRecruitContent(hostNickname: string, participantNicknames: string[], size: number): string {
-  const list =
-    participantNicknames.length > 0
-      ? participantNicknames.map((name, i) => `${i + 1}. ${name}`).join("\n")
-      : "아직 참가자가 없어요.";
-  return (
-    `🎮 **내전 모집** (${participantNicknames.length}/${size})\n` +
-    `모집: ${hostNickname}\n\n` +
-    `${list}\n\n` +
-    `모집한 사람이나 그룹장이 [확정]을 누르면 바로 팀이 짜여요.`
-  );
+// ▰▰▰▱▱▱▱▱▱▱ — 몇 명 찼는지 한눈에
+function progressBar(current: number, size: number): string {
+  const filled = Math.min(current, size);
+  return "▰".repeat(filled) + "▱".repeat(Math.max(size - filled, 0));
+}
+
+export interface RecruitParticipantView {
+  nickname: string;
+  discordUserId: string | null;
+}
+
+// 참가자 옆에 디스코드 멘션을 붙여서 그룹 닉네임과 디코 닉네임이 달라도 누가 누군지 보이게 함
+// (임베드 안의 멘션은 이름으로만 보이고 알림은 안 감)
+function participantLine(p: RecruitParticipantView, index: number): string {
+  const mention = p.discordUserId ? ` · <@${p.discordUserId}>` : "";
+  return `\`${String(index + 1).padStart(2, " ")}\` **${p.nickname}**${mention}`;
+}
+
+export function buildRecruitEmbed(
+  hostNickname: string,
+  participants: RecruitParticipantView[],
+  size: number,
+  createdAt: Date,
+): DiscordEmbed {
+  const isFull = participants.length >= size;
+  return {
+    title: isFull ? "🎮 내전 모집 · 인원 마감" : "🎮 내전 모집 중",
+    description: `### ${participants.length} / ${size}명\n${progressBar(participants.length, size)}`,
+    color: isFull ? EMBED_COLOR.green : EMBED_COLOR.blurple,
+    fields: [{ name: "참가자", value: fieldValue(participants.map(participantLine), "아직 참가자가 없어요.") }],
+    footer: { text: `모집 ${hostNickname} · 모집한 사람이나 그룹장이 [확정]하면 바로 팀이 짜여요` },
+    timestamp: createdAt.toISOString(),
+  };
 }
 
 async function renderRecruitMessage(matchId: number): Promise<DiscordInteractionResponse["data"]> {
@@ -64,14 +87,20 @@ async function renderRecruitMessage(matchId: number): Promise<DiscordInteraction
     where: { id: matchId },
     include: {
       creator: { select: { nickname: true } },
-      participants: { include: { user: { select: { nickname: true } } }, orderBy: { id: "asc" } },
+      participants: {
+        include: { user: { select: { nickname: true, discordUserId: true } } },
+        orderBy: { id: "asc" },
+      },
     },
   });
   const size = match.recruitSize ?? DEFAULT_RECRUIT_SIZE;
-  const nicknames = match.participants.map((p) => p.user.nickname);
+  const participants = match.participants.map((p) => ({
+    nickname: p.user.nickname,
+    discordUserId: p.user.discordUserId,
+  }));
   return {
-    content: buildRecruitContent(match.creator.nickname, nicknames, size),
-    components: buildRecruitButtons(match.id, nicknames.length >= size),
+    embeds: [buildRecruitEmbed(match.creator.nickname, participants, size, match.createdAt)],
+    components: buildRecruitButtons(match.id, participants.length >= size),
   };
 }
 
@@ -192,25 +221,28 @@ export async function handleRecruitButton(
           { participantUserIds: match.participants.map((p) => p.userId) },
           { notifyDiscord: false },
         );
-        const red = detail.participants.filter((p) => p.assignedTeam === "TEAM_A");
-        const blue = detail.participants.filter((p) => p.assignedTeam === "TEAM_B");
-        const balance = detail.teamAnalysis ? `\n⚖️ 밸런스 ${detail.teamAnalysis.balancePercent}%` : "";
         return {
           type: 7,
-          data: {
-            content:
-              `🎮 **팀이 확정됐어요!** (${detail.participants.length}명)${balance}\n\n` +
-              `🔴 레드팀\n${formatRosterBlock(red)}\n` +
-              `🔵 블루팀\n${formatRosterBlock(blue)}`,
-            components: [],
-          },
+          data: { embeds: [buildTeamsEmbed(detail.id, detail.participants, detail.teamAnalysis)], components: [] },
         };
       }
 
       case "cancel": {
         if (!canManage) return ephemeral("모집한 사람이나 그룹장만 모집을 취소할 수 있어요.");
         await deleteMatch(match.id, user.id);
-        return { type: 7, data: { content: "❌ 내전 모집이 취소됐어요.", components: [] } };
+        return {
+          type: 7,
+          data: {
+            embeds: [
+              {
+                title: "❌ 내전 모집이 취소됐어요",
+                description: `-# ${user.nickname}님이 모집을 취소했어요.`,
+                color: EMBED_COLOR.gray,
+              },
+            ],
+            components: [],
+          },
+        };
       }
     }
   } catch (err) {

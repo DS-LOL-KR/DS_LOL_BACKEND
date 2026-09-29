@@ -10,7 +10,12 @@ import {
   verifyDiscordOAuthState,
 } from "./discord.service";
 import { DEFAULT_RECRUIT_SIZE, handleRecruitButton, startRecruit } from "./discordRecruit.service"; // /내전모집 + 모집 버튼
-import type { DiscordInteraction, DiscordInteractionResponse } from "./discord.types";
+import {
+  DISCORD_EPHEMERAL_FLAG,
+  type DiscordInteraction,
+  type DiscordInteractionResponse,
+  type DiscordMessageData,
+} from "./discord.types";
 
 // 디스코드는 이 엔드포인트를 호출할 때마다 X-Signature-Ed25519/X-Signature-Timestamp
 // 헤더를 실어 보내고, (timestamp + 원본 바디)를 그 서명으로 검증하길 요구함 —
@@ -84,22 +89,24 @@ export async function handleInteraction(req: Request, res: Response, next: NextF
         return;
       }
 
-      let content: string;
+      // 결과는 임베드, "서버 안에서만 돼요" 같은 안내는 누른 사람에게만 보이는 짧은 글
+      const onlyYou = (content: string): DiscordMessageData => ({ content, flags: DISCORD_EPHEMERAL_FLAG });
+      let data: DiscordMessageData;
       if (!guildId) {
-        content = "이 명령어는 서버(길드) 안에서만 사용할 수 있어요.";
+        data = onlyYou("이 명령어는 서버(길드) 안에서만 사용할 수 있어요.");
       } else if (commandName === "티어표") {
-        content = await buildTierTableReply(guildId);
+        data = await buildTierTableReply(guildId);
       } else if (commandName === "전적") {
         const nickname = getOptionValue(body.data, "닉네임");
-        content = nickname ? await buildPlayerStatsReply(guildId, nickname) : "닉네임을 입력해주세요.";
+        data = nickname ? await buildPlayerStatsReply(guildId, nickname) : onlyYou("닉네임을 입력해 주세요.");
       } else if (commandName === "내전결과") {
-        content = await buildLatestMatchReply(guildId);
+        data = await buildLatestMatchReply(guildId);
       } else {
         logger.error("Unknown discord slash command", { commandName });
-        content = "아직 지원하지 않는 명령어예요.";
+        data = onlyYou("아직 지원하지 않는 명령어예요.");
       }
 
-      res.status(200).json({ type: 4, data: { content } } satisfies DiscordInteractionResponse);
+      res.status(200).json({ type: 4, data } satisfies DiscordInteractionResponse);
       return;
     }
 

@@ -1,3 +1,5 @@
+import type { DiscordEmbed } from "../../lib/discordEmbeds"; // 답장 메시지를 임베드(카드 형태)로 보내기 위해 사용
+
 // 디스코드 인터랙션 요청 바디의 최소 타입 — 우리가 실제로 읽는 필드만 옮겨둠
 // (전체 스펙: https://discord.com/developers/docs/interactions/receiving-and-responding).
 
@@ -39,6 +41,7 @@ export interface DiscordButton {
   style: 1 | 2 | 3 | 4;
   label: string;
   custom_id: string;
+  emoji?: { name: string };
   disabled?: boolean;
 }
 
@@ -55,9 +58,13 @@ export const DISCORD_EPHEMERAL_FLAG = 64;
 // 7 = UPDATE_MESSAGE(버튼이 붙어 있던 그 메시지를 수정 — 모집 인원 갱신 등)
 export interface DiscordInteractionResponse {
   type: 1 | 4 | 7;
-  data?: {
-    content: string;
-    components?: DiscordActionRow[];
-    flags?: number;
-  };
+  data?: DiscordMessageData;
+}
+
+// 답장 본문 — 봇 답장은 전부 embeds로 보내고, 본인에게만 보이는 짧은 안내만 content(+EPHEMERAL)로 보냄
+export interface DiscordMessageData {
+  content?: string;
+  embeds?: DiscordEmbed[];
+  components?: DiscordActionRow[];
+  flags?: number;
 }

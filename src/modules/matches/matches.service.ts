@@ -4,6 +4,7 @@ import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalanc
 import { CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr을 계산한 공식 버전 기록용
 import { rebuildInternalMmr } from "../game-accounts/game-accounts.service"; // 매너점수가 바뀔 때 internal_mmr을 기록 기준으로 다시 계산
 import { sendDiscordNotification } from "../../lib/discord"; // 팀 구성/내전 종료를 그룹 디스코드 채널에 알리기 위해 사용
+import { buildMatchResultEmbed, buildTeamsEmbed, type DiscordEmbed } from "../../lib/discordEmbeds"; // 알림 임베드 디자인(봇 답장과 공용)
 // 아래 각 요청의 바디 형태를 명시하기 위해 사용 (평가 생성 / 내전 생성 / 내전 종료 /
 // 팀 자동 구성 / 팀 수동 조정)
 import type {
@@ -26,32 +27,13 @@ async function findGroupOrThrow(groupId: number) {
 // 알림(2026-09-12 도입) — 등록 안 해뒀으면 조용히 아무 것도 안 함. 호출부에서
 // await 없이(void) 불러서, 디스코드가 느리거나 안 되는 것 때문에 실제 응답이
 // 늦어지지 않게 함 — sendDiscordNotification 자체도 내부에서 실패를 삼킴.
-async function notifyGroupDiscord(groupId: number, content: string): Promise<void> {
+async function notifyGroupDiscord(groupId: number, embed: DiscordEmbed): Promise<void> {
   const group = await prisma.group.findUnique({
     where: { id: groupId },
     select: { discordWebhookUrl: true },
   });
   if (!group?.discordWebhookUrl) return;
-  await sendDiscordNotification(group.discordWebhookUrl, content);
-}
-
-// 명단(포지션+닉네임)을 디스코드 코드 블록(```)으로 감싸서 고정폭 정렬되게 만듦 —
-// 그냥 쉼표로 나열하던 것보다 한눈에 훑기 좋게 해달라는 요청(2026-09-18)으로 변경.
-// export: discord.service.ts(슬래시 명령어 /내전결과)가 디스코드 웹후크 알림과
-// 같은 포맷으로 결과를 보여주려고 그대로 재사용함.
-export function formatRosterBlock(participants: { nickname: string; assignedPosition: string | null }[]): string {
-  if (participants.length === 0) return "```\n-\n```";
-  const lines = participants.map((p) =>
-    p.assignedPosition ? `${p.assignedPosition.padEnd(4)} ${p.nickname}` : p.nickname,
-  );
-  return "```\n" + lines.join("\n") + "\n```";
-}
-
-// 내전 결과용 — 승/패 팀 각각 닉네임 옆에 이번 판 mmr 변동을 붙여서 코드 블록으로.
-export function formatResultBlock(participants: { nickname: string; mmrChange: number }[]): string {
-  if (participants.length === 0) return "```\n-\n```";
-  const lines = participants.map((p) => `${p.nickname.padEnd(10)} ${p.mmrChange > 0 ? "+" : ""}${p.mmrChange}`);
-  return "```\n" + lines.join("\n") + "\n```";
+  await sendDiscordNotification(group.discordWebhookUrl, embed);
 }
 
 async function findMatchOrThrow(matchId: number) {
@@ -357,14 +339,7 @@ export async function generateTeams(
   const detail = await buildMatchDetail(await findMatchOrThrow(matchId));
 
   if (options.notifyDiscord !== false) {
-    const redRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_A");
-    const blueRoster = detail.participants.filter((p) => p.assignedTeam === "TEAM_B");
-    void notifyGroupDiscord(
-      match.groupId,
-      `🎮 **팀이 구성됐어요!**\n\n` +
-        `🔴 레드팀\n${formatRosterBlock(redRoster)}\n` +
-        `🔵 블루팀\n${formatRosterBlock(blueRoster)}`,
-    );
+    void notifyGroupDiscord(match.groupId, buildTeamsEmbed(detail.id, detail.participants, detail.teamAnalysis));
   }
 
   return detail;
@@ -490,15 +465,9 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
 
   const detail = await buildMatchDetail(finishedMatch);
 
-  const winners = detail.participants.filter((p) => p.assignedTeam === input.winningTeam);
-  const losers = detail.participants.filter((p) => p.assignedTeam && p.assignedTeam !== input.winningTeam);
-  // TEAM_A = 레드, TEAM_B = 블루 (2026-09-12부터 — 그 전엔 반대였음)
-  const teamLabel = input.winningTeam === "TEAM_A" ? "레드팀" : "블루팀";
   void notifyGroupDiscord(
     match.groupId,
-    `🏆 **내전 결과 — ${teamLabel} 승리!**\n\n` +
-      `✅ 승리\n${formatResultBlock(winners)}\n` +
-      `❌ 패배\n${formatResultBlock(losers)}`,
+    buildMatchResultEmbed(detail.id, input.winningTeam, detail.participants, new Date()),
   );
 
   return detail;

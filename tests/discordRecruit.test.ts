@@ -3,7 +3,7 @@ import request from "supertest"; // 실제 서버를 띄우지 않고 express �
 import { app } from "../src/app"; // 테스트 대상이 되는 Express 앱 인스턴스
 import {
   buildRecruitButtons,
-  buildRecruitContent,
+  buildRecruitEmbed,
   parseRecruitCustomId,
 } from "../src/modules/discord/discordRecruit.service"; // 모집 메시지/버튼 헬퍼
 import { buildDiscordLinkUrl, verifyDiscordLinkToken } from "../src/modules/discord/discordLink.service"; // 계정 연결 링크 토큰
@@ -25,10 +25,33 @@ describe("parseRecruitCustomId", () => {
 });
 
 describe("recruit message", () => {
-  it("shows the count and numbered participants", () => {
-    const content = buildRecruitContent("민규", ["민규", "철수"], 10);
-    expect(content).toContain("(2/10)");
-    expect(content).toContain("1. 민규\n2. 철수");
+  const createdAt = new Date("2026-09-29T12:00:00Z");
+
+  it("shows a big count, a progress bar, and each player's discord mention", () => {
+    const embed = buildRecruitEmbed(
+      "민규",
+      [
+        { nickname: "민규", discordUserId: "111" },
+        { nickname: "철수", discordUserId: "222" },
+      ],
+      10,
+      createdAt,
+    );
+    expect(embed.description).toContain("### 2 / 10명");
+    expect(embed.description).toContain("▰▰▱▱▱▱▱▱▱▱");
+    expect(embed.fields?.[0].value).toContain("**철수** · <@222>");
+    expect(embed.footer?.text).toContain("모집 민규");
+  });
+
+  it("changes title and color when full", () => {
+    const players = [
+      { nickname: "A", discordUserId: "1" },
+      { nickname: "B", discordUserId: "2" },
+    ];
+    const full = buildRecruitEmbed("민규", players, 2, createdAt);
+    const open = buildRecruitEmbed("민규", players.slice(0, 1), 2, createdAt);
+    expect(full.title).toContain("마감");
+    expect(full.color).not.toBe(open.color);
   });
 
   it("disables only the join button when full", () => {
