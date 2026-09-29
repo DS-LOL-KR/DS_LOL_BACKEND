@@ -6,6 +6,7 @@ import cookieParser from "cookie-parser"; // 쿠키에 담긴 JWT 등을 req.coo
 
 import { env } from "./config/env"; // CORS_ORIGIN 등 환경변수 값 사용
 import { errorMiddleware } from "./middlewares/error.middleware"; // 모든 라우터 뒤에 붙여서 에러 응답 형식을 통일
+import { AppError } from "./lib/AppError"; // 어느 라우트에도 안 걸린 요청을 JSON 404로 돌려주기 위해 사용
 
 // 명세서(API 명세서 데이터베이스) 기준 모듈 구성.
 // tiers/matches의 /groups/:id/* 라우트, game-accounts/matches의 /users/me/* 라우트는
@@ -62,6 +63,12 @@ export function createApp(): Application {
   // 디스코드가 직접 호출하는 엔드포인트라 authMiddleware를 안 씀 — 대신 컨트롤러
   // 안에서 Ed25519 서명을 검증함(디스코드 공식 요구사항).
   app.use("/api/discord", discordRouter);
+
+  // 어느 라우트에도 안 걸린 요청 — 없으면 Express 기본 HTML 404가 나가서
+  // 다른 에러들과 같은 { error: { message } } JSON 형식이 깨짐.
+  app.use((req, _res, next) => {
+    next(new AppError(404, `존재하지 않는 API입니다: ${req.method} ${req.path}`));
+  });
 
   app.use(errorMiddleware);
 

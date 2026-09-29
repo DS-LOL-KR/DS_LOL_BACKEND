@@ -1,5 +1,7 @@
 import axios from "axios"; // 라이엇 API에 HTTP 요청을 보내기 위해 사용
 import { env } from "../../config/env"; // RIOT_API_KEY, RIOT_REGION
+import { AppError } from "../../lib/AppError"; // 라이엇 API 에러를 상태코드별 의도된 에러로 바꾸기 위해 사용
+import { logger } from "../../lib/logger"; // API 키 만료처럼 우리 쪽 설정 문제를 로그로 남기기 위해 사용
 
 // League-V4/Summoner-V4 등은 "플랫폼 라우팅"(kr, na1, euw1...)을 쓰고,
 // Account-V1(라이엇ID 조회)은 더 넓은 "지역 라우팅"(asia, americas, europe)을 씀.
@@ -21,10 +23,44 @@ const PLATFORM_TO_REGIONAL: Record<string, "asia" | "americas" | "europe"> = {
 const platformRouting = env.RIOT_REGION;
 const regionalRouting = PLATFORM_TO_REGIONAL[env.RIOT_REGION] ?? "asia";
 
-// 모든 라이엇 API 호출에 공통으로 필요한 API 키 헤더를 미리 박아둔 axios 인스턴스
+// 모든 라이엇 API 호출에 공통으로 필요한 API 키 헤더를 미리 박아둔 axios 인스턴스.
+// timeout이 없으면 라이엇 쪽이 응답을 안 줄 때 요청이 무한정 매달려 있음.
 const riotHttp = axios.create({
   headers: { "X-Riot-Token": env.RIOT_API_KEY },
+  timeout: 10_000,
 });
+
+// 라이엇 API 에러를 그대로 던지면 error.middleware.ts에서 전부 500 "Internal Server
+// Error"가 돼서, 프론트가 "닉네임#태그 오타"와 "잠시 후 재시도"를 구분할 수 없었음
+// (2026-09-29). 상태코드별로 의미 있는 AppError로 바꿔서 던짐.
+export function toRiotAppError(err: unknown): unknown {
+  if (!axios.isAxiosError(err)) return err;
+
+  const status = err.response?.status;
+  const url = err.config?.url ?? "";
+
+  if (status === 404) {
+    if (url.includes("/riot/account/")) {
+      return new AppError(404, "라이엇 계정을 찾을 수 없습니다. 닉네임#태그를 확인해 주세요.");
+    }
+    return new AppError(404, "라이엇에서 해당 정보를 찾을 수 없습니다.");
+  }
+  if (status === 429) {
+    const retryAfter = Number(err.response?.headers?.["retry-after"]);
+    return new AppError(429, "라이엇 API 요청 한도를 넘었습니다. 잠시 후 다시 시도해 주세요.", {
+      retryAfterSeconds: Number.isFinite(retryAfter) ? retryAfter : null,
+    });
+  }
+  if (status === 401 || status === 403) {
+    // 유저 잘못이 아니라 우리 API 키 문제(개발용 키는 24시간마다 만료됨) — 로그로 알 수 있게 남김.
+    logger.error("Riot API rejected our API key", { status, url });
+    return new AppError(503, "라이엇 API 연동에 문제가 있습니다. 관리자에게 문의해 주세요.");
+  }
+  // 라이엇 5xx, 타임아웃, 네트워크 에러
+  return new AppError(502, "라이엇 서버가 응답하지 않습니다. 잠시 후 다시 시도해 주세요.");
+}
+
+riotHttp.interceptors.response.use(undefined, (err) => Promise.reject(toRiotAppError(err)));
 
 export interface RiotAccount {
   puuid: string;
