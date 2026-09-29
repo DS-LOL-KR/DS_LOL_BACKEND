@@ -1,52 +1,9 @@
-// 디스코드 슬래시 명령어(/티어표, /전적, /내전결과, /내전모집)를 디스코드 서버에 등록하는
-// 1회성 스크립트. `npm run discord:register-commands`로 실행.
-//
-// DISCORD_TEST_GUILD_ID가 .env에 있으면 그 서버에만 즉시 등록(개발용 — 반영이
-// 바로 됨). 없으면 전역(모든 서버) 등록 — 반영까지 최대 1시간 걸릴 수 있음
-// (디스코드 공식 문서 기준).
-import axios from "axios";
+// 디스코드 슬래시 명령어를 지금 바로 디스코드에 맞추는 수동 스크립트.
+// `npm run discord:register-commands`로 실행. 서버가 시작될 때도 같은 일을 자동으로
+// 하므로(src/modules/discord/discordCommands.ts) 보통은 안 돌려도 됨 — 서버를 안
+// 띄우고 명령어만 맞추고 싶을 때 씀.
 import { env } from "../src/config/env";
-
-// 디스코드 애플리케이션 커맨드 옵션 타입: 3 = STRING, 4 = INTEGER
-const STRING_OPTION_TYPE = 3;
-const INTEGER_OPTION_TYPE = 4;
-
-const commands = [
-  {
-    name: "티어표",
-    description: "이 디스코드 서버에 연동된 그룹의 티어표를 보여줘요",
-  },
-  {
-    name: "전적",
-    description: "그룹원 한 명의 전적을 보여줘요",
-    options: [
-      {
-        name: "닉네임",
-        description: "조회할 그룹원의 닉네임",
-        type: STRING_OPTION_TYPE,
-        required: true,
-      },
-    ],
-  },
-  {
-    name: "내전결과",
-    description: "가장 최근에 끝난 내전 결과를 보여줘요",
-  },
-  {
-    name: "내전모집",
-    description: "내전 인원을 모집하고, 확정하면 바로 팀을 짜줘요",
-    options: [
-      {
-        name: "인원",
-        description: "모집 인원 (기본 10명)",
-        type: INTEGER_OPTION_TYPE,
-        required: false,
-        min_value: 2,
-        max_value: 10,
-      },
-    ],
-  },
-];
+import { syncDiscordCommands } from "../src/modules/discord/discordCommands";
 
 async function main(): Promise<void> {
   if (!env.DISCORD_BOT_TOKEN || !env.DISCORD_APPLICATION_ID) {
@@ -55,18 +12,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const url = env.DISCORD_TEST_GUILD_ID
-    ? `https://discord.com/api/v10/applications/${env.DISCORD_APPLICATION_ID}/guilds/${env.DISCORD_TEST_GUILD_ID}/commands`
-    : `https://discord.com/api/v10/applications/${env.DISCORD_APPLICATION_ID}/commands`;
-
-  const { data } = await axios.put<Array<{ name: string }>>(url, commands, {
-    headers: { Authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
-  });
-
-  console.log(
-    `등록 완료 (${env.DISCORD_TEST_GUILD_ID ? `테스트 서버 ${env.DISCORD_TEST_GUILD_ID}, 즉시 반영` : "전역, 최대 1시간 소요"}):`,
-    data.map((c) => c.name).join(", "),
-  );
+  const result = await syncDiscordCommands();
+  const scope =
+    result.scope === "guild" ? `테스트 서버 ${env.DISCORD_TEST_GUILD_ID}, 즉시 반영` : "전역, 최대 1시간 소요";
+  console.log(`${result.changed ? "등록 완료" : "이미 최신"} (${scope}):`, result.names.join(", "));
 }
 
 main().catch((err) => {

@@ -62,7 +62,7 @@ export type Env = z.infer<typeof envSchema> & {
   // profileImageStorage.ts가 이 값으로 "로컬 디스크 vs S3" 저장 방식을 고름.
   isS3Configured: boolean;
   // DISCORD_BOT_TOKEN/APPLICATION_ID/PUBLIC_KEY가 전부 채워졌는지 — 슬래시
-  // 명령어 등록 스크립트(scripts/registerDiscordCommands.ts)가 미리 확인하는 데 씀.
+  // 명령어 설정 여부를 한 번에 확인하는 데 씀.
   isDiscordBotConfigured: boolean;
 };
 
