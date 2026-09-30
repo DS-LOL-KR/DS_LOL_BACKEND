@@ -2,10 +2,10 @@ import { Prisma } from "@prisma/client"; // 같은 사람이 [참가]를 동시�
 import { prisma } from "../../config/prisma"; // groups/users/custom_matches 조회·저장
 import { AppError } from "../../lib/AppError"; // 팀 구성/삭제에서 던진 의도된 에러를 디스코드 안내 메시지로 바꾸기 위해 사용
 import { deleteMatch, generateTeams } from "../matches/matches.service"; // [확정] 팀 구성, [모집 취소] 삭제 — 웹과 같은 로직 재사용
-import { buildTeamsEmbed, EMBED_COLOR, fieldValue, type DiscordEmbed } from "../../lib/discordEmbeds"; // 임베드 디자인(웹후크 알림과 공용)
-import { buildDiscordLinkUrl } from "./discordLink.service"; // 연결 안 된 사람에게 줄 계정 연결 링크
+import { EMBED_COLOR, fieldValue, type DiscordEmbed } from "../../lib/discordEmbeds"; // 임베드 디자인(웹후크 알림과 공용)
+import { buildTeamCard } from "./discordMatch.service"; // [확정] 후 팀 카드(승리팀·다시 섞기 버튼 포함)
+import { ephemeral, resolveGroupMember } from "./discordContext"; // 누른 사람 확인(연동 그룹·계정 연결·멤버십) + 본인만 보이는 안내
 import {
-  DISCORD_EPHEMERAL_FLAG,
   type DiscordActionRow,
   type DiscordInteractionResponse,
 } from "./discord.types";
@@ -29,9 +29,6 @@ export function parseRecruitCustomId(customId: string): { action: RecruitAction;
   return { action: match[1] as RecruitAction, matchId: Number(match[2]) };
 }
 
-function ephemeral(content: string): DiscordInteractionResponse {
-  return { type: 4, data: { content, flags: DISCORD_EPHEMERAL_FLAG } };
-}
 
 export function buildRecruitButtons(matchId: number, isFull: boolean): DiscordActionRow[] {
   return [
@@ -102,39 +99,6 @@ async function renderRecruitMessage(matchId: number): Promise<DiscordInteraction
     embeds: [buildRecruitEmbed(match.creator.nickname, participants, size, match.createdAt)],
     components: buildRecruitButtons(match.id, participants.length >= size),
   };
-}
-
-// 디스코드 서버 → 연동된 그룹, 디스코드 유저 ID → 우리 유저, 그리고 그 그룹의 멤버인지까지
-// 확인. 하나라도 안 되면 누른 사람에게만 보이는 안내 메시지를 돌려줌.
-type GroupMemberContext =
-  | { reply: DiscordInteractionResponse }
-  | { group: Prisma.GroupGetPayload<object>; user: Prisma.UserGetPayload<object> };
-
-async function resolveGroupMember(guildId: string, discordUserId: string): Promise<GroupMemberContext> {
-  const group = await prisma.group.findUnique({ where: { discordGuildId: guildId } });
-  if (!group) {
-    return { reply: ephemeral("이 디스코드 서버에 연동된 그룹이 없어요. 그룹 관리 화면에서 먼저 연동해 주세요.") };
-  }
-
-  const user = await prisma.user.findUnique({ where: { discordUserId } });
-  if (!user) {
-    return {
-      reply: ephemeral(
-        `아직 DS_LOL 계정과 디스코드가 연결되지 않았어요. 아래 링크를 열어 연결한 뒤 다시 눌러 주세요. (10분 안에 열어야 해요)\n${buildDiscordLinkUrl(discordUserId)}`,
-      ),
-    };
-  }
-
-  const membership = await prisma.groupMember.findUnique({
-    where: { groupId_userId: { groupId: group.id, userId: user.id } },
-  });
-  if (!membership) {
-    return {
-      reply: ephemeral(`"${group.name}" 그룹에 가입돼 있지 않아요. 그룹장에게 초대 코드를 받아 먼저 가입해 주세요.`),
-    };
-  }
-
-  return { group, user };
 }
 
 // 슬래시 명령어: /내전모집 인원:10
@@ -221,10 +185,9 @@ export async function handleRecruitButton(
           { participantUserIds: match.participants.map((p) => p.userId) },
           { notifyDiscord: false },
         );
-        return {
-          type: 7,
-          data: { embeds: [buildTeamsEmbed(detail.id, detail.participants, detail.teamAnalysis)], components: [] },
-        };
+        // 팀 카드에 [레드 승] [블루 승] [다시 섞기] 버튼을 붙여서 결과까지 디스코드에서 입력하게 함
+        const card = buildTeamCard(detail);
+        return { type: 7, data: { embeds: [card.embed], components: card.components } };
       }
 
       case "cancel": {

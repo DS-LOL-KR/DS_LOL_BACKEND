@@ -16,8 +16,10 @@ export interface DiscordInteractionData {
   // 슬래시 명령어일 때
   name?: string;
   options?: DiscordInteractionOption[];
-  // 버튼 클릭일 때 — 버튼을 만들 때 우리가 넣어둔 값(예: "recruit:join:12")
+  // 버튼 클릭·선택 메뉴일 때 — 만들 때 우리가 넣어둔 값(예: "recruit:join:12")
   custom_id?: string;
+  // 선택 메뉴(매너 평가 대상 고르기)에서 고른 값들
+  values?: string[];
 }
 
 export interface DiscordUser {
@@ -45,10 +47,18 @@ export interface DiscordButton {
   disabled?: boolean;
 }
 
-// type 1 = ACTION_ROW(버튼을 한 줄로 묶는 컨테이너, 한 줄에 최대 5개)
+// type 3 = STRING_SELECT(드롭다운 선택 메뉴, 한 줄에 하나, 옵션 최대 25개)
+export interface DiscordStringSelect {
+  type: 3;
+  custom_id: string;
+  placeholder?: string;
+  options: Array<{ label: string; value: string; description?: string; emoji?: { name: string } }>;
+}
+
+// type 1 = ACTION_ROW(컴포넌트를 한 줄로 묶는 컨테이너 — 버튼은 최대 5개, 선택 메뉴는 1개)
 export interface DiscordActionRow {
   type: 1;
-  components: DiscordButton[];
+  components: Array<DiscordButton | DiscordStringSelect>;
 }
 
 // 64 = EPHEMERAL(누른 사람에게만 보이는 메시지)

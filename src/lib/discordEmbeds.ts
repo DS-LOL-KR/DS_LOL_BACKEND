@@ -60,10 +60,12 @@ export interface TeamSummaryView {
 }
 
 // 팀 구성 완료 — 웹 팀 구성 웹후크 알림과 디스코드 /내전모집 [확정] 결과가 같이 씀
+// footerHint: 웹에서 짠 팀(웹후크 알림)은 웹에서 결과를 넣고, 디스코드 팀 카드는 아래 버튼으로 넣음
 export function buildTeamsEmbed(
   matchId: number,
   players: TeamPlayer[],
   analysis: TeamSummaryView | null,
+  footerHint = "경기가 끝나면 웹에서 승리팀을 선택해 주세요",
 ): DiscordEmbed {
   const red = players.filter((p) => p.assignedTeam === "TEAM_A");
   const blue = players.filter((p) => p.assignedTeam === "TEAM_B");
@@ -81,7 +83,7 @@ export function buildTeamsEmbed(
       { name: `🔴 레드팀${avg(analysis?.teamA.averageMmr)}`, value: fieldValue(red.map(line)), inline: true },
       { name: `🔵 블루팀${avg(analysis?.teamB.averageMmr)}`, value: fieldValue(blue.map(line)), inline: true },
     ],
-    footer: { text: `내전 #${matchId} · 경기가 끝나면 웹에서 승리팀을 선택해 주세요` },
+    footer: { text: `내전 #${matchId} · ${footerHint}` },
     timestamp: new Date().toISOString(),
   };
 }

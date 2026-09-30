@@ -394,10 +394,28 @@ function calculateMmrChange(ownTeamAvgMmr: number, opponentTeamAvgMmr: number, w
 // API 명세서: POST /matches/:id/finish
 // status를 FINISHED로, winning_team을 기록. 이 시점에 참가자별 mmr 변동을 계산해서
 // custom_match_participants.mmr_change와 user_game_stats.internal_mmr에 반영함.
-export async function finishMatch(matchId: number, input: FinishMatchInput) {
+// options.notifyDiscord: 디스코드 팀 카드의 [승리팀] 버튼으로 호출될 때는 그 카드 자체가
+// 결과로 바뀌어서, 같은 채널에 웹후크 알림까지 가면 중복이라 끔.
+export async function finishMatch(
+  matchId: number,
+  input: FinishMatchInput,
+  options: { notifyDiscord?: boolean } = {},
+) {
   const match = await findMatchOrThrow(matchId);
   if (match.status !== "MATCHED") {
     throw new AppError(409, "팀이 구성된(MATCHED) 내전만 종료할 수 있습니다.");
+  }
+
+  // 상태 확인과 MMR 반영이 따로 떨어져 있으면, 두 사람이 [레드 승]을 동시에 눌렀을 때
+  // 둘 다 위 확인을 통과해서 MMR이 두 번 반영될 수 있음(디스코드 버튼으로 결과를 받게
+  // 되면서 현실적인 문제가 됨, 2026-09-30). MATCHED → FINISHED 전환을 조건부 업데이트
+  // 한 번으로 먼저 "선점"하고, 선점에 성공한 요청만 MMR을 반영함.
+  const claimed = await prisma.customMatch.updateMany({
+    where: { id: matchId, status: "MATCHED" },
+    data: { status: "FINISHED", winningTeam: input.winningTeam },
+  });
+  if (claimed.count === 0) {
+    throw new AppError(409, "이미 결과가 입력된 내전입니다.");
   }
 
   const teamAParticipants = match.participants.filter((p) => p.assignedTeam === "TEAM_A");
@@ -457,18 +475,14 @@ export async function finishMatch(matchId: number, input: FinishMatchInput) {
     }),
   );
 
-  const finishedMatch = await prisma.customMatch.update({
-    where: { id: matchId },
-    data: { status: "FINISHED", winningTeam: input.winningTeam },
-    include: { participants: true },
-  });
+  const detail = await buildMatchDetail(await findMatchOrThrow(matchId));
 
-  const detail = await buildMatchDetail(finishedMatch);
-
-  void notifyGroupDiscord(
-    match.groupId,
-    buildMatchResultEmbed(detail.id, input.winningTeam, detail.participants, new Date()),
-  );
+  if (options.notifyDiscord !== false) {
+    void notifyGroupDiscord(
+      match.groupId,
+      buildMatchResultEmbed(detail.id, input.winningTeam, detail.participants, new Date()),
+    );
+  }
 
   return detail;
 }

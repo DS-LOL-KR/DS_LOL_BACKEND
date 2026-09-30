@@ -10,6 +10,7 @@ import {
   verifyDiscordOAuthState,
 } from "./discord.service";
 import { DEFAULT_RECRUIT_SIZE, handleRecruitButton, startRecruit } from "./discordRecruit.service"; // /내전모집 + 모집 버튼
+import { handleMatchButton, handleRateInteraction } from "./discordMatch.service"; // 팀·결과 카드 버튼 + 매너 평가
 import {
   DISCORD_EPHEMERAL_FLAG,
   type DiscordInteraction,
@@ -110,14 +111,24 @@ export async function handleInteraction(req: Request, res: Response, next: NextF
       return;
     }
 
-    // type 3(MESSAGE_COMPONENT) — /내전모집 메시지의 버튼 클릭.
+    // type 3(MESSAGE_COMPONENT) — 모집 메시지·팀/결과 카드의 버튼, 매너 평가 선택 메뉴.
     if (body.type === 3) {
       const guildId = body.guild_id;
       const discordUserId = getDiscordUserId(body);
       const customId = body.data?.custom_id;
-      if (guildId && discordUserId && customId?.startsWith("recruit:")) {
-        res.status(200).json(await handleRecruitButton(guildId, discordUserId, customId));
-        return;
+      if (guildId && discordUserId && customId) {
+        if (customId.startsWith("recruit:")) {
+          res.status(200).json(await handleRecruitButton(guildId, discordUserId, customId));
+          return;
+        }
+        if (customId.startsWith("match:")) {
+          res.status(200).json(await handleMatchButton(guildId, discordUserId, customId));
+          return;
+        }
+        if (customId.startsWith("rate:")) {
+          res.status(200).json(await handleRateInteraction(guildId, discordUserId, customId, body.data?.values));
+          return;
+        }
       }
     }
 
