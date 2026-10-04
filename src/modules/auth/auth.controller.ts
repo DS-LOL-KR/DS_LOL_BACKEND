@@ -2,7 +2,8 @@ import type { Request, Response, NextFunction } from "express"; // Express 컨�
 import * as authService from "./auth.service"; // 실제 구글 인증/JWT 발급 로직은 서비스 계층에 위임
 import { env } from "../../config/env"; // 쿠키 secure 옵션, 로그인 후 리다이렉트할 프론트엔드 주소
 import { googleCallbackQuerySchema } from "./auth.schema"; // 콜백 쿼리(code)가 실제로 있는지 검증
-import { AppError } from "../../lib/AppError"; // 쿼리 검증 실패를 400으로 표현하기 위해 사용
+import { logger } from "../../lib/logger"; // 로그인 실패 원인(어느 단계에서 멈췄는지)을 남기기 위해 사용
+import { TimeoutError } from "../../lib/withTimeout"; // 구글/DB 단계가 시간 제한에 걸렸는지 구분
 
 const AUTH_COOKIE_NAME = "token";
 // JWT_EXPIRES_IN(기본 7d)과 눈대중으로 맞춰둔 쿠키 수명. 실제 인증 여부는 서버가
@@ -36,12 +37,15 @@ export async function googleAuth(_req: Request, res: Response, next: NextFunctio
 }
 
 // GET /auth/google/callback
-export async function googleCallback(req: Request, res: Response, next: NextFunction): Promise<void> {
+// 사용자의 브라우저가 구글에서 리다이렉트되어 오는 곳이라, 실패해도 JSON을 보여주면
+// 화면에 에러 텍스트만 뜨거나(구글 인증 실패, 콜백 새로고침 등) 응답이 없으면 무한 로딩이
+// 됨(2026-10-04). 실패하면 원인을 로그로 남기고 프론트 로그인 페이지로 돌려보냄 —
+// 프론트는 ?loginError=1을 보고 "다시 시도해 주세요"를 띄움.
+export async function googleCallback(req: Request, res: Response): Promise<void> {
   try {
     const parsed = googleCallbackQuerySchema.safeParse(req.query);
     if (!parsed.success) {
-      next(new AppError(400, "Invalid callback query", parsed.error.flatten()));
-      return;
+      throw new Error("missing code (user cancelled or invalid callback)");
     }
 
     const { token } = await authService.handleGoogleCallback(parsed.data);
@@ -55,7 +59,11 @@ export async function googleCallback(req: Request, res: Response, next: NextFunc
     // 그대로 응답하면 화면에 텍스트만 뜸 — 로그인 완료 후 프론트엔드로 돌려보냄.
     res.redirect(env.CORS_ORIGIN);
   } catch (err) {
-    next(err);
+    logger.error("Google login callback failed", {
+      step: err instanceof TimeoutError ? err.step : undefined,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    res.redirect(`${env.CORS_ORIGIN}/login?loginError=1`);
   }
 }
 
