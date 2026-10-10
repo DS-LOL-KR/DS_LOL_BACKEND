@@ -65,10 +65,8 @@ export async function listMyGameAccounts(userId: number) {
   });
 }
 
-// 전적 갱신/동기화(refreshGameAccountStats, syncMatchHistory)는 소유자 체크 없이
-// 이걸 씀 — 그룹원 프로필 화면에서 "이 사람 대신 지금 갱신"을 눌러줄 수 있어야
-// 한다는 요청으로 소유권 제한을 풀었음(2026-09-19). stats 조회 자체가 이미
-// 로그인만 하면 누구든 가능하게 열려있던 것과 같은 방향.
+// 소유권 체크 없이 계정만 찾음 — 조회 API와 아래 findOwnedGameAccountOrThrow/
+// findAccessibleGameAccountOrThrow가 공통으로 씀.
 async function findGameAccountOrThrow(gameAccountId: number) {
   const account = await prisma.gameAccount.findUnique({
     where: { id: gameAccountId },
@@ -88,6 +86,25 @@ async function findOwnedGameAccountOrThrow(userId: number, gameAccountId: number
 
   if (account.userId !== userId) {
     throw new AppError(403, "본인이 연결한 계정만 처리할 수 있습니다.");
+  }
+
+  return account;
+}
+
+// 본인 계정이거나, 계정 주인과 같은 그룹에 속한 유저만 통과. refresh/sync는 다른
+// 사람 프로필에서 "지금 갱신"을 대신 눌러줄 수 있어야 해서 본인 전용으로는 못 막지만,
+// 로그인만 하면 아무 계정 ID로나 라이엇 API를 반복 호출해서 우리 API 키 한도를
+// 태울 수 있는 구멍이 있었음(2026-10-10) — 같은 그룹 멤버로만 좁힘.
+async function findAccessibleGameAccountOrThrow(requesterId: number, gameAccountId: number) {
+  const account = await findGameAccountOrThrow(gameAccountId);
+  if (account.userId === requesterId) return account;
+
+  const sharedGroup = await prisma.groupMember.findFirst({
+    where: { userId: requesterId, group: { members: { some: { userId: account.userId } } } },
+    select: { id: true },
+  });
+  if (!sharedGroup) {
+    throw new AppError(403, "본인이나 같은 그룹 멤버의 계정만 갱신할 수 있습니다.");
   }
 
   return account;
@@ -134,17 +151,20 @@ export async function deleteGameAccount(userId: number, gameAccountId: number): 
 // performanceScore)과 공식 티어/매너 점수만으로 처음부터 다시 계산함(lib/mmr.ts v2).
 // 이전 internal_mmr을 입력으로 쓰지 않아서 몇 번을 호출해도 같은 값이 나옴 —
 // performRefresh(티어 반영)와 matches.service.ts(매너 평가 반영) 양쪽에서 씀.
+// db: 내전 결과 입력/삭제처럼 트랜잭션 안에서 부를 때는 그 트랜잭션 클라이언트를 넘김
+// — 같은 트랜잭션에서 방금 지운/바꾼 행을 기준으로 다시 계산해야 해서.
 export async function rebuildInternalMmr(
   gameAccount: { id: number; userId: number; gameId: number },
   officialTier: string | null,
   mannerScore: number,
+  db: Prisma.TransactionClient = prisma,
 ): Promise<number> {
   const [customMatchSum, scoredMatches] = await Promise.all([
-    prisma.customMatchParticipant.aggregate({
+    db.customMatchParticipant.aggregate({
       where: { userId: gameAccount.userId, match: { gameId: gameAccount.gameId, status: "FINISHED" } },
       _sum: { mmrChange: true },
     }),
-    prisma.matchHistoryParticipant.findMany({
+    db.matchHistoryParticipant.findMany({
       where: { gameAccountId: gameAccount.id, performanceScore: { not: null } },
       select: { performanceScore: true },
     }),
@@ -233,10 +253,10 @@ async function performRefresh(gameAccount: { id: number; userId: number; gameId:
 
 // 기능명세서: "전적 자동 갱신" — "사용자가 직접 갱신할 수 있게 버튼 하나 만들 계획"
 // API 명세서: POST /game-accounts/:id/refresh (수동 버튼 쪽)
-// 로그인만 하면 누구든(본인 계정 아니어도) 호출 가능 — 다른 사람 프로필에서도
-// "지금 갱신"을 눌러줄 수 있게 함(2026-09-19).
-export async function refreshGameAccountStats(gameAccountId: number) {
-  const account = await findGameAccountOrThrow(gameAccountId);
+// 본인 계정이 아니어도 같은 그룹 멤버면 호출 가능 — 다른 사람 프로필에서도
+// "지금 갱신"을 눌러줄 수 있게 함(2026-09-19, 2026-10-10에 같은 그룹으로 제한).
+export async function refreshGameAccountStats(requesterId: number, gameAccountId: number) {
+  const account = await findAccessibleGameAccountOrThrow(requesterId, gameAccountId);
   assertLolAccount(account);
   return performRefresh(account);
 }
@@ -343,9 +363,9 @@ function calculatePerformanceScore(
 // 기능명세서: "라인별 티어선정"의 재료 데이터 — 실제 매치 기록을 라이엇 Match-V5에서
 // 가져와 저장하고, user_position_stats(라인별 게임 수/승률)를 다시 계산함.
 // API 명세서: POST /game-accounts/:id/match-history/sync
-// refreshGameAccountStats와 같은 이유로 소유자 체크 없음(2026-09-19).
-export async function syncMatchHistory(gameAccountId: number, input: SyncMatchHistoryInput) {
-  const account = await findGameAccountOrThrow(gameAccountId);
+// refreshGameAccountStats와 같은 이유로 본인 또는 같은 그룹 멤버만 호출 가능.
+export async function syncMatchHistory(requesterId: number, gameAccountId: number, input: SyncMatchHistoryInput) {
+  const account = await findAccessibleGameAccountOrThrow(requesterId, gameAccountId);
   assertLolAccount(account);
   return performMatchHistorySync(account, input.count);
 }

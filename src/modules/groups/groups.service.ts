@@ -2,6 +2,7 @@ import crypto from "node:crypto"; // 초대 코드용 랜덤 문자열 생성에
 import { Prisma } from "@prisma/client"; // 유니크 제약 위반(P2002) 종류를 구분하기 위해 사용
 import { prisma } from "../../config/prisma"; // groups, group_members 테이블 접근
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
+import { purgeMatches } from "../matches/matches.service"; // 그룹 삭제 시 그 그룹 내전과 MMR/매너 반영분을 같이 정리
 import type {
   CreateGroupInput,
   JoinGroupInput,
@@ -75,18 +76,32 @@ export async function getGroupById(groupId: number) {
 
 // 기능명세서: "그룹 삭제"
 // API 명세서: DELETE /groups/:id
-// custom_matches 등 다른 연관 데이터는 아직 실제로 생성될 수 없는 단계(matches
-// 모듈 미구현)라 group_members만 정리하고 그룹을 지움.
+// custom_matches.group_id가 ON DELETE RESTRICT라, 내전을 한 번이라도 한 그룹은 내전을
+// 먼저 안 지우면 외래키 오류(500)로 삭제가 안 됐음(2026-10-10 수정). 내전과 그 평가를
+// 같이 지우고, 그 내전들로 오르내린 멤버들의 internal_mmr/매너 점수도 되돌림
+// (matches.service.ts의 purgeMatches) — 전부 한 트랜잭션.
+const DELETE_GROUP_TIMEOUT_MS = 30_000;
+
 export async function deleteGroup(groupId: number): Promise<void> {
   const group = await prisma.group.findUnique({ where: { id: groupId } });
   if (!group) {
     throw new AppError(404, "그룹을 찾을 수 없습니다.");
   }
 
-  await prisma.$transaction([
-    prisma.groupMember.deleteMany({ where: { groupId } }),
-    prisma.group.delete({ where: { id: groupId } }),
-  ]);
+  await prisma.$transaction(
+    async (tx) => {
+      const matches = await tx.customMatch.findMany({ where: { groupId }, select: { id: true } });
+      await purgeMatches(
+        tx,
+        matches.map((m) => m.id),
+        group.gameId,
+      );
+      await tx.groupMember.deleteMany({ where: { groupId } });
+      await tx.group.delete({ where: { id: groupId } });
+    },
+    // 내전이 많이 쌓인 그룹은 멤버 MMR 재계산까지 기본 5초를 넘길 수 있음
+    { timeout: DELETE_GROUP_TIMEOUT_MS },
+  );
 }
 
 // 기능명세서: "그룹장 위임" — "그룹을 만든사람은 이미 그룹장인데 넘겨주기 가능"

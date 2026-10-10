@@ -1,3 +1,4 @@
+import type { Prisma } from "@prisma/client"; // 트랜잭션 클라이언트 타입(내전 결과 반영/삭제를 한 트랜잭션으로 묶음)
 import { prisma } from "../../config/prisma"; // custom_matches, custom_match_participants 등 테이블 접근
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
 import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalancer"; // 실제 팀 배정 알고리즘
@@ -410,24 +411,23 @@ export async function finishMatch(
   // 둘 다 위 확인을 통과해서 MMR이 두 번 반영될 수 있음(디스코드 버튼으로 결과를 받게
   // 되면서 현실적인 문제가 됨, 2026-09-30). MATCHED → FINISHED 전환을 조건부 업데이트
   // 한 번으로 먼저 "선점"하고, 선점에 성공한 요청만 MMR을 반영함.
-  const claimed = await prisma.customMatch.updateMany({
-    where: { id: matchId, status: "MATCHED" },
-    data: { status: "FINISHED", winningTeam: input.winningTeam },
-  });
-  if (claimed.count === 0) {
-    throw new AppError(409, "이미 결과가 입력된 내전입니다.");
-  }
+  // 선점과 MMR 반영은 한 트랜잭션 — 따로 하면 중간에 실패했을 때 "FINISHED인데 MMR은
+  // 일부만 반영된" 내전이 남고, 상태가 이미 FINISHED라 다시 입력할 수도 없었음(2026-10-10).
+  await prisma.$transaction(async (tx) => {
+    const claimed = await tx.customMatch.updateMany({
+      where: { id: matchId, status: "MATCHED" },
+      data: { status: "FINISHED", winningTeam: input.winningTeam },
+    });
+    if (claimed.count === 0) {
+      throw new AppError(409, "이미 결과가 입력된 내전입니다.");
+    }
 
-  const teamAParticipants = match.participants.filter((p) => p.assignedTeam === "TEAM_A");
-  const teamBParticipants = match.participants.filter((p) => p.assignedTeam === "TEAM_B");
+    // 선점한 뒤에 다시 읽음 — 선점 전에 읽은 참가자 명단은 그 사이 [다시 섞기]로 바뀌었을 수 있음
+    const participants = await tx.customMatchParticipant.findMany({ where: { matchId } });
 
-  const gameAccountByUserId = new Map<
-    number,
-    { id: number; internalMmr: number } | null
-  >();
-  await Promise.all(
-    match.participants.map(async (p) => {
-      const gameAccount = await prisma.gameAccount.findUnique({
+    const gameAccountByUserId = new Map<number, { id: number; internalMmr: number } | null>();
+    for (const p of participants) {
+      const gameAccount = await tx.gameAccount.findUnique({
         where: { userId_gameId: { userId: p.userId, gameId: match.gameId } },
         include: { stats: true },
       });
@@ -435,23 +435,18 @@ export async function finishMatch(
         p.userId,
         gameAccount ? { id: gameAccount.id, internalMmr: gameAccount.stats?.internalMmr ?? 1000 } : null,
       );
-    }),
-  );
+    }
 
-  const averageMmr = (participants: typeof match.participants): number => {
-    if (participants.length === 0) return 1000;
-    const sum = participants.reduce(
-      (acc, p) => acc + (gameAccountByUserId.get(p.userId)?.internalMmr ?? 1000),
-      0,
-    );
-    return sum / participants.length;
-  };
+    const averageMmr = (team: typeof participants): number => {
+      if (team.length === 0) return 1000;
+      const sum = team.reduce((acc, p) => acc + (gameAccountByUserId.get(p.userId)?.internalMmr ?? 1000), 0);
+      return sum / team.length;
+    };
 
-  const avgA = averageMmr(teamAParticipants);
-  const avgB = averageMmr(teamBParticipants);
+    const avgA = averageMmr(participants.filter((p) => p.assignedTeam === "TEAM_A"));
+    const avgB = averageMmr(participants.filter((p) => p.assignedTeam === "TEAM_B"));
 
-  await Promise.all(
-    match.participants.map(async (p) => {
+    for (const p of participants) {
       const isTeamA = p.assignedTeam === "TEAM_A";
       const ownAvg = isTeamA ? avgA : avgB;
       const opponentAvg = isTeamA ? avgB : avgA;
@@ -459,21 +454,21 @@ export async function finishMatch(
         (isTeamA && input.winningTeam === "TEAM_A") || (!isTeamA && input.winningTeam === "TEAM_B");
       const mmrChange = calculateMmrChange(ownAvg, opponentAvg, won);
 
-      await prisma.customMatchParticipant.update({
+      await tx.customMatchParticipant.update({
         where: { id: p.id },
         data: { mmrChange },
       });
 
       const gameAccount = gameAccountByUserId.get(p.userId);
       if (gameAccount) {
-        await prisma.userGameStat.upsert({
+        await tx.userGameStat.upsert({
           where: { gameAccountId: gameAccount.id },
           update: { internalMmr: { increment: mmrChange } },
           create: { gameAccountId: gameAccount.id, internalMmr: 1000 + mmrChange },
         });
       }
-    }),
-  );
+    }
+  });
 
   const detail = await buildMatchDetail(await findMatchOrThrow(matchId));
 
@@ -519,31 +514,62 @@ export async function duplicateMatchTeams(matchId: number) {
 // internal_mmr도 여기서 같이 반영함 — v1 공식(현재 값에 70% 섞기)은 평가가 한 건
 // 들어올 때마다 값이 10%씩 깎였는데(2026-09-28 발견), v2는 기록 전체 재합산
 // (rebuildInternalMmr)이라 매너 점수가 바뀐 만큼만 움직임.
-async function recomputeMannerScore(targetUserId: number, gameId: number): Promise<void> {
-  const evaluations = await prisma.userEvaluation.findMany({
+// 평가가 하나도 안 남았으면(내전 삭제로 지워진 경우) 기본값 3.5로 되돌림. 내전 기록도
+// 같이 재합산하므로 내전 삭제 후 MMR 되돌리기에도 그대로 씀(purgeMatches).
+const DEFAULT_MANNER_SCORE = 3.5;
+
+async function recomputeMannerScore(
+  targetUserId: number,
+  gameId: number,
+  db: Prisma.TransactionClient = prisma,
+): Promise<void> {
+  const evaluations = await db.userEvaluation.findMany({
     where: { targetId: targetUserId, match: { gameId } },
     select: { score: true },
   });
-  if (evaluations.length === 0) return;
 
-  const average = evaluations.reduce((sum, e) => sum + e.score, 0) / evaluations.length;
+  const average =
+    evaluations.length > 0
+      ? evaluations.reduce((sum, e) => sum + e.score, 0) / evaluations.length
+      : DEFAULT_MANNER_SCORE;
 
-  const gameAccount = await prisma.gameAccount.findUnique({
+  const gameAccount = await db.gameAccount.findUnique({
     where: { userId_gameId: { userId: targetUserId, gameId } },
     include: { stats: true },
   });
   if (!gameAccount) return;
 
-  const internalMmr = await rebuildInternalMmr(gameAccount, gameAccount.stats?.officialTier ?? null, average);
+  const internalMmr = await rebuildInternalMmr(gameAccount, gameAccount.stats?.officialTier ?? null, average, db);
 
-  await prisma.userGameStat.upsert({
+  await db.userGameStat.upsert({
     where: { gameAccountId: gameAccount.id },
     update: { mannerScore: average, internalMmr, mmrVersion: CURRENT_MMR_VERSION },
     create: { gameAccountId: gameAccount.id, mannerScore: average, internalMmr, mmrVersion: CURRENT_MMR_VERSION },
   });
 }
 
-// 기능명세서: "사용자 평가" — "내전이 끝나면 사용자 평가를 받음 (전적을 불러와서)"
+// 내전들을 평가·참가자 행까지 지우고, 거기 참가했거나 평가받은 유저의 manner_score/
+// internal_mmr을 남은 기록 기준으로 다시 계산함. 내전 삭제(deleteMatch)와 그룹 삭제
+// (groups.service.ts)가 같이 씀 — 반드시 호출하는 쪽의 트랜잭션(tx) 안에서 불러야
+// 삭제와 재계산이 한 번에 반영됨.
+export async function purgeMatches(tx: Prisma.TransactionClient, matchIds: number[], gameId: number): Promise<void> {
+  if (matchIds.length === 0) return;
+
+  const [participants, evaluations] = await Promise.all([
+    tx.customMatchParticipant.findMany({ where: { matchId: { in: matchIds } }, select: { userId: true } }),
+    tx.userEvaluation.findMany({ where: { matchId: { in: matchIds } }, select: { targetId: true } }),
+  ]);
+
+  await tx.userEvaluation.deleteMany({ where: { matchId: { in: matchIds } } });
+  await tx.customMatchParticipant.deleteMany({ where: { matchId: { in: matchIds } } });
+  await tx.customMatch.deleteMany({ where: { id: { in: matchIds } } });
+
+  const affectedUserIds = new Set([...participants.map((p) => p.userId), ...evaluations.map((e) => e.targetId)]);
+  for (const userId of affectedUserIds) {
+    await recomputeMannerScore(userId, gameId, tx);
+  }
+}
+
 // API 명세서: POST /matches/:id/evaluations
 export async function createEvaluation(
   matchId: number,
@@ -604,10 +630,10 @@ export async function getMyEvaluatedTargetIds(matchId: number, evaluatorId: numb
 
 // API 명세서: DELETE /matches/:id
 // 내전을 만든 사람이나 그룹장만 삭제 가능(요청한 유저는 컨트롤러에서 넘겨받음).
-// FINISHED된 내전이었으면 그때 참가자별로 반영해둔 mmr_change를 되돌려서, 내전
-// 기록은 지워졌는데 그 내전으로 오르내린 internal_mmr만 그대로 남는 상황을 막음.
-// (매너평가로 반영된 internal_mmr 변화까지는 되돌리지 않음 — mmrChange와 달리
-// "이 평가 하나가 얼마나 반영됐는지"를 따로 저장해두지 않아서 정확히 역산 불가.)
+// FINISHED된 내전이었으면 그 내전으로 오르내린 internal_mmr과, 그 내전에서 받은 매너
+// 평가까지 되돌림 — 예전엔 mmr_change만 따로 빼고(트랜잭션 밖에서) 매너 점수는 그대로
+// 둬서, 중간 실패 시 MMR이 반쯤 되돌아가거나 지워진 평가가 매너 점수에 계속 남았음
+// (2026-10-10). 이제 purgeMatches가 삭제 후 남은 기록으로 한 트랜잭션 안에서 재계산함.
 export async function deleteMatch(matchId: number, userId: number): Promise<void> {
   const match = await findMatchOrThrow(matchId);
   const group = await findGroupOrThrow(match.groupId);
@@ -616,27 +642,7 @@ export async function deleteMatch(matchId: number, userId: number): Promise<void
     throw new AppError(403, "이 내전을 만든 사람이나 그룹장만 삭제할 수 있습니다.");
   }
 
-  if (match.status === "FINISHED") {
-    await Promise.all(
-      match.participants.map(async (p) => {
-        if (p.mmrChange === 0) return;
-        const gameAccount = await prisma.gameAccount.findUnique({
-          where: { userId_gameId: { userId: p.userId, gameId: match.gameId } },
-        });
-        if (!gameAccount) return;
-        await prisma.userGameStat.updateMany({
-          where: { gameAccountId: gameAccount.id },
-          data: { internalMmr: { decrement: p.mmrChange } },
-        });
-      }),
-    );
-  }
-
-  await prisma.$transaction([
-    prisma.userEvaluation.deleteMany({ where: { matchId } }),
-    prisma.customMatchParticipant.deleteMany({ where: { matchId } }),
-    prisma.customMatch.delete({ where: { id: matchId } }),
-  ]);
+  await prisma.$transaction((tx) => purgeMatches(tx, [matchId], match.gameId));
 }
 
 // 기능명세서: "MMR 변동 내역 확인" — "내 점수가 왜 올랐는지/내렸는지 확인 가능"
