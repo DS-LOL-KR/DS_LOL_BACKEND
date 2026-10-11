@@ -290,6 +290,8 @@ export async function updatePreferredPosition(
 // 그룹 전체 갱신에서 이 시간 안에 이미 갱신된 계정은 건너뜀 — 버튼을 연달아 눌러도
 // 라이엇 API를 반복 호출하지 않게 하려는 기준.
 const GROUP_REFRESH_SKIP_MS = 5 * 60 * 1000;
+const GROUP_REFRESH_CONCURRENCY = 3;
+const GROUP_REFRESH_DELAY_MS = 500;
 
 // API 명세서: POST /groups/:id/tiers/refresh (tiers.service.ts에서 호출)
 // 매일 자정에 모든 계정을 돌던 배치(syncGameAccountStats.job.ts)를 없애고, 그룹
@@ -315,24 +317,34 @@ export async function refreshGroupGameAccounts(
   let succeeded = 0;
   let skipped = 0;
 
-  for (const account of accounts) {
-    if (account.stats?.refreshedAt && account.stats.refreshedAt.getTime() > recentlyRefreshedAfter) {
-      skipped += 1;
-      continue;
+  const pending = accounts.filter((account) => {
+    const isRecent = account.stats?.refreshedAt && account.stats.refreshedAt.getTime() > recentlyRefreshedAfter;
+    if (isRecent) skipped += 1;
+    return !isRecent;
+  });
+
+  // 한 명씩 돌면 라이엇 프록시 왕복(~2.6초) 때문에 19명에 ~55초 걸려서(2026-10-11
+  // 측정) 워커 GROUP_REFRESH_CONCURRENCY개가 큐에서 하나씩 꺼내 동시에 처리함.
+  // 워커마다 계정 하나 끝나면 지연을 둬서, 라이엇이 즉시 응답해도 초당
+  // 3워커 × 3호출 / 0.5초 = 18건으로 Development Key 한도(초당 20건) 안에 들게 함.
+  // 2분당 100건 한도는 동시성과 무관 — 33명 넘는 그룹은 뒤쪽이 429로 errors에 들어감.
+  let next = 0;
+  const worker = async () => {
+    while (next < pending.length) {
+      const account = pending[next++];
+      try {
+        await performRefresh(account);
+        succeeded += 1;
+      } catch (err) {
+        errors.push({
+          gameAccountId: account.id,
+          message: err instanceof Error ? err.message : String(err),
+        });
+      }
+      await sleep(GROUP_REFRESH_DELAY_MS);
     }
-    try {
-      await performRefresh(account);
-      succeeded += 1;
-    } catch (err) {
-      errors.push({
-        gameAccountId: account.id,
-        message: err instanceof Error ? err.message : String(err),
-      });
-    }
-    // 계정 하나당 API 호출 3개(League/Summoner/Mastery)씩 나가므로, Development
-    // Key rate limit(초당 20건, 2분당 100건)을 피하려고 계정 사이에 지연을 둠.
-    await sleep(300);
-  }
+  };
+  await Promise.all(Array.from({ length: GROUP_REFRESH_CONCURRENCY }, worker));
 
   return { total: accounts.length, succeeded, skipped, failed: errors.length, errors };
 }
