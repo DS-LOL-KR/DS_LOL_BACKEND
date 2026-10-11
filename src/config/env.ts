@@ -18,6 +18,11 @@ const envSchema = z.object({
 
   RIOT_API_KEY: z.string().min(1, "RIOT_API_KEY is required"),
   RIOT_REGION: z.string().default("kr"),
+  // madp VM은 학교 웹필터(ePrism)가 riotgames.com / leagueoflegends.com을 막아서
+  // (2026-10-05 확인) Cloudflare Worker 프록시(~/riot-proxy)를 거쳐서 호출함.
+  // 둘 다 채워야 프록시를 쓰고, 비어 있으면 지금처럼 라이엇에 직접 요청함.
+  RIOT_PROXY_URL: z.string().url().optional(),
+  RIOT_PROXY_SECRET: z.string().optional(),
 
   // 디스코드 슬래시 명령어(/티어표, /전적, /내전결과) 봇 — 기존 discordWebhookUrl
   // (그룹장이 등록하는 수신 웹후크, 단방향 알림용)과는 별개로, 이건 디스코드가

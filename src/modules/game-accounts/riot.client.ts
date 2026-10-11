@@ -2,6 +2,7 @@ import axios from "axios"; // 라이엇 API에 HTTP 요청을 보내기 위해 �
 import { env } from "../../config/env"; // RIOT_API_KEY, RIOT_REGION
 import { AppError } from "../../lib/AppError"; // 라이엇 API 에러를 상태코드별 의도된 에러로 바꾸기 위해 사용
 import { logger } from "../../lib/logger"; // API 키 만료처럼 우리 쪽 설정 문제를 로그로 남기기 위해 사용
+import { useRiotProxy } from "../../lib/riotProxy"; // 학교 웹필터 우회용 프록시(설정돼 있을 때만)
 
 // League-V4/Summoner-V4 등은 "플랫폼 라우팅"(kr, na1, euw1...)을 쓰고,
 // Account-V1(라이엇ID 조회)은 더 넓은 "지역 라우팅"(asia, americas, europe)을 씀.
@@ -29,6 +30,7 @@ const riotHttp = axios.create({
   headers: { "X-Riot-Token": env.RIOT_API_KEY },
   timeout: 10_000,
 });
+useRiotProxy(riotHttp);
 
 // 라이엇 API 에러를 그대로 던지면 error.middleware.ts에서 전부 500 "Internal Server
 // Error"가 돼서, 프론트가 "닉네임#태그 오타"와 "잠시 후 재시도"를 구분할 수 없었음

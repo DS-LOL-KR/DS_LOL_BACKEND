@@ -1,5 +1,9 @@
 import axios from "axios"; // 라이엇 정적 데이터(Data Dragon)를 조회하기 위해 사용 — API 키 불필요
 import { logger } from "../../lib/logger"; // 조회 실패를 조용히 무시하지 않고 남기기 위해 사용
+import { useRiotProxy } from "../../lib/riotProxy"; // 학교 웹필터 우회용 프록시(설정돼 있을 때만)
+
+const ddragonHttp = axios.create({ timeout: 10_000 });
+useRiotProxy(ddragonHttp);
 
 // Match-V5 등 라이엇 API는 championId(숫자)만 주고 이름은 안 줘서, 화면에 "챔피언
 // #266"처럼 뜨는 문제가 있었음. Data Dragon(정적 CDN, API 키 불필요)에서 챔피언
@@ -11,12 +15,12 @@ let cachedAt = 0;
 let inFlight: Promise<Map<number, string>> | null = null;
 
 async function fetchChampionNameMap(): Promise<Map<number, string>> {
-  const { data: versions } = await axios.get<string[]>(
+  const { data: versions } = await ddragonHttp.get<string[]>(
     "https://ddragon.leagueoflegends.com/api/versions.json",
   );
   const latestVersion = versions[0];
 
-  const { data } = await axios.get<{ data: Record<string, { key: string; name: string }> }>(
+  const { data } = await ddragonHttp.get<{ data: Record<string, { key: string; name: string }> }>(
     `https://ddragon.leagueoflegends.com/cdn/${latestVersion}/data/ko_KR/champion.json`,
   );
 
