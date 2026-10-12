@@ -5,17 +5,16 @@ import { AppError } from "../../lib/AppError"; // 설정 누락/state 위조·�
 import { listTiers } from "../tiers/tiers.service"; // /티어표
 import { listMatchesForGroup, getMatchById } from "../matches/matches.service"; // /내전결과
 import { buildMatchResultEmbed, EMBED_COLOR, fieldValue } from "../../lib/discordEmbeds"; // 임베드 디자인(웹후크 알림과 공용)
-import { DISCORD_EPHEMERAL_FLAG, type DiscordMessageData } from "./discord.types";
-import type { TierEntry } from "../tiers/tiers.service";
-
-// 티어 등급(1~5)을 훑어보기 좋은 이모지로 — 그냥 숫자보다 채팅에서 눈에 잘 들어옴.
-const TIER_EMOJI: Record<1 | 2 | 3 | 4 | 5, string> = {
-  1: "🥇",
-  2: "🥈",
-  3: "🥉",
-  4: "4️⃣",
-  5: "5️⃣",
-};
+import { DISCORD_EPHEMERAL_FLAG, type DiscordInteractionResponse, type DiscordMessageData } from "./discord.types";
+import {
+  buildMyRankContent,
+  buildTierCard,
+  TIER_EMOJI,
+  TIER_ME_CUSTOM_ID,
+  type TierCardRow,
+  type TierCardView,
+} from "./tierCard"; // /티어표 카드(Components V2) 그리기
+import { ephemeral, resolveGroupMember } from "./discordContext"; // [내 순위] 버튼 누른 사람 확인
 
 async function findGroupByGuildId(guildId: string) {
   return prisma.group.findUnique({ where: { discordGuildId: guildId } });
@@ -76,58 +75,65 @@ function notice(content: string): DiscordMessageData {
 
 const NOT_LINKED_NOTICE = notice("이 디스코드 서버에 연동된 그룹이 없어요. 그룹 관리 화면에서 먼저 연동해 주세요.");
 
+// /티어표 카드에 필요한 데이터 — 순위(tiers.service.ts의 members, 사람당 한 줄)에
+// 이 그룹 내전 기록(직전 MMR 변화, 최근 승패)을 붙임. 내전 기록은 한 번에 조회.
+async function loadTierCardView(group: { id: number; name: string }, viewerUserId: number | null): Promise<TierCardView> {
+  const table = await listTiers(group.id, {});
+  const userIds = table.members.map((m) => m.userId);
+
+  const participations = await prisma.customMatchParticipant.findMany({
+    where: { userId: { in: userIds }, assignedTeam: { not: null }, match: { status: "FINISHED", groupId: group.id } },
+    select: { userId: true, assignedTeam: true, mmrChange: true, match: { select: { winningTeam: true } } },
+    orderBy: { match: { createdAt: "desc" } },
+  });
+  const recordsByUserId = new Map<number, Array<{ win: boolean; mmrChange: number }>>();
+  for (const p of participations) {
+    const list = recordsByUserId.get(p.userId) ?? [];
+    list.push({ win: p.assignedTeam === p.match.winningTeam, mmrChange: p.mmrChange });
+    recordsByUserId.set(p.userId, list);
+  }
+
+  const rows: TierCardRow[] = table.members.map((m) => {
+    const records = recordsByUserId.get(m.userId) ?? [];
+    return {
+      userId: m.userId,
+      nickname: m.nickname,
+      mmr: m.internalMmr,
+      tier: m.tier,
+      lastChange: records[0]?.mmrChange ?? null,
+      recent: records.map((r) => r.win),
+    };
+  });
+
+  return { groupName: group.name, rows, viewerUserId, lastUpdatedAt: table.lastUpdatedAt };
+}
+
 // 기능명세서: "티어표 한눈에 보기" 디스코드 버전 — /티어표
-export async function buildTierTableReply(guildId: string): Promise<DiscordMessageData> {
+// 명령어를 쓴 사람이 우리 계정과 연결돼 있으면 그 사람 줄을 강조함(연결 안 됐으면 강조만 생략).
+export async function buildTierTableReply(guildId: string, discordUserId?: string): Promise<DiscordMessageData> {
   const group = await findGroupByGuildId(guildId);
   if (!group) return NOT_LINKED_NOTICE;
 
-  const table = await listTiers(group.id, {});
+  const viewer = discordUserId
+    ? await prisma.user.findUnique({ where: { discordUserId }, select: { id: true } })
+    : null;
+  return buildTierCard(await loadTierCardView(group, viewer?.id ?? null));
+}
 
-  // "전체" 탭 기준으로는 라인마다 한 줄씩 나오는데(user_position_stats 존재하는
-  // 라인 수만큼) 디스코드에는 사람당 한 줄만 필요해서 첫 줄(가장 티어 높은 라인,
-  // tiers.service.ts에서 이미 티어순으로 정렬해둠)만 남김.
-  const seen = new Set<number>();
-  const rows: TierEntry[] = [];
-  for (const row of table.tiers) {
-    if (seen.has(row.userId)) continue;
-    seen.add(row.userId);
-    rows.push(row);
-  }
+// /티어표 카드의 [내 순위] 버튼 — 누른 사람에게만 보이는 요약
+export async function handleTierButton(
+  guildId: string,
+  discordUserId: string,
+  customId: string,
+): Promise<DiscordInteractionResponse> {
+  if (customId !== TIER_ME_CUSTOM_ID) return ephemeral("알 수 없는 버튼이에요.");
 
-  if (rows.length === 0) {
-    return {
-      embeds: [
-        { title: `📊 ${group.name} 티어표`, description: "아직 집계된 데이터가 없어요.", color: EMBED_COLOR.gray },
-      ],
-    };
-  }
+  const ctx = await resolveGroupMember(guildId, discordUserId);
+  if ("reply" in ctx) return ctx.reply;
 
-  const byTier = new Map<1 | 2 | 3 | 4 | 5, TierEntry[]>();
-  for (const row of rows) {
-    const list = byTier.get(row.tier) ?? [];
-    list.push(row);
-    byTier.set(row.tier, list);
-  }
-
-  const fields = ([1, 2, 3, 4, 5] as const)
-    .filter((tier) => byTier.has(tier))
-    .map((tier) => ({
-      name: `${TIER_EMOJI[tier]} ${tier}티어`,
-      value: fieldValue(byTier.get(tier)!.map((r) => `**${r.nickname}** · \`${r.internalMmr}\``)),
-    }));
-
-  return {
-    embeds: [
-      {
-        title: `📊 ${group.name} 티어표`,
-        description: `-# 그룹 내부 MMR 기준 · 총 ${rows.length}명`,
-        color: EMBED_COLOR.gold,
-        fields,
-        ...(table.lastUpdatedAt && { timestamp: table.lastUpdatedAt }),
-        footer: { text: "마지막 갱신" },
-      },
-    ],
-  };
+  const view = await loadTierCardView(ctx.group, ctx.user.id);
+  const content = buildMyRankContent(view, ctx.user.id);
+  return ephemeral(content ?? "아직 티어표에 없어요. 웹에서 게임 계정을 연동하면 올라가요.");
 }
 
 // 이 그룹 안에서 실제로 치른 내전(custom_matches) 기록만 뽑음 — 라이엇 랭크/일반전
@@ -158,7 +164,7 @@ export async function buildPlayerStatsReply(guildId: string, nicknameQuery: stri
 
   const table = await listTiers(group.id, {});
   const query = nicknameQuery.trim().toLowerCase();
-  const rows = table.tiers.filter((r) => r.nickname.toLowerCase() === query);
+  const rows = table.members.filter((r) => r.nickname.toLowerCase() === query);
 
   if (rows.length === 0) {
     return notice(`"${nicknameQuery}"님을 찾을 수 없어요. 그룹원 닉네임을 정확히 입력해 주세요.`);

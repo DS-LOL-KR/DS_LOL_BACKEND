@@ -26,8 +26,20 @@ export interface TierEntry {
   mainPosition: string | null;
 }
 
+// 사람당 한 줄 — tiers는 라인 기록(user_position_stats)이 있는 라인마다 한 줄씩이라,
+// 계정은 연동했지만 매치 동기화를 아직 안 한 멤버는 tiers에 줄이 없음(그런데 순위
+// 계산에는 들어감). 디스코드 /티어표가 이 멤버들을 통째로 빠뜨리던 문제(2026-10-11)
+// 때문에 순위에 들어간 멤버 전원을 순위 순서대로 따로 내려줌. 웹이 쓰는 tiers는 그대로.
+export interface TierMember {
+  userId: number;
+  nickname: string;
+  internalMmr: number;
+  tier: 1 | 2 | 3 | 4 | 5;
+}
+
 export interface TierTable {
   tiers: TierEntry[];
+  members: TierMember[];
   // 그룹원들의 game_account 통계(내부 MMR·티어) 중 가장 최근에 갱신된 시각 —
   // 화면에 "n시간 전 갱신"으로 표시하는 값이 예전엔 고정 문구("2시간 전")였어서
   // 실제 데이터 기준으로 바꿈. 연동된 계정이 하나도 없으면 null.
@@ -166,7 +178,18 @@ async function buildTierEntries(groupId: number, query: ListTiersQuery): Promise
     return a.tier - b.tier || scoreB - scoreA;
   });
 
-  return { tiers: entries, lastUpdatedAt: lastUpdatedAt?.toISOString() ?? null };
+  const memberInfoByUserId = new Map(memberInfos.map((m) => [m.userId, m]));
+  const rankedMembers: TierMember[] = ranked.map((r) => {
+    const info = memberInfoByUserId.get(r.userId)!;
+    return {
+      userId: r.userId,
+      nickname: info.nickname,
+      internalMmr: info.internalMmr,
+      tier: tierByUserId.get(r.userId) ?? 5,
+    };
+  });
+
+  return { tiers: entries, members: rankedMembers, lastUpdatedAt: lastUpdatedAt?.toISOString() ?? null };
 }
 
 // 기능명세서: "티어표 한눈에 보기" / "라인별 티어선정"

@@ -64,6 +64,27 @@ export interface DiscordActionRow {
 // 64 = EPHEMERAL(누른 사람에게만 보이는 메시지)
 export const DISCORD_EPHEMERAL_FLAG = 64;
 
+// Components V2(2026-10-11 /티어표에 도입) — 임베드 대신 컨테이너 안에 글·구분선·버튼을
+// 자유롭게 배치. 이 플래그를 켠 메시지는 content/embeds를 같이 못 씀.
+export const DISCORD_COMPONENTS_V2_FLAG = 1 << 15;
+
+export interface DiscordTextDisplay {
+  type: 10;
+  content: string;
+}
+
+export interface DiscordSeparator {
+  type: 14;
+  divider?: boolean;
+  spacing?: 1 | 2; // 1 = 좁게, 2 = 넓게
+}
+
+export interface DiscordContainer {
+  type: 17;
+  accent_color?: number;
+  components: Array<DiscordTextDisplay | DiscordSeparator | DiscordActionRow>;
+}
+
 // 4 = CHANNEL_MESSAGE_WITH_SOURCE(새 메시지로 답장),
 // 7 = UPDATE_MESSAGE(버튼이 붙어 있던 그 메시지를 수정 — 모집 인원 갱신 등)
 export interface DiscordInteractionResponse {
@@ -75,6 +96,6 @@ export interface DiscordInteractionResponse {
 export interface DiscordMessageData {
   content?: string;
   embeds?: DiscordEmbed[];
-  components?: DiscordActionRow[];
+  components?: Array<DiscordActionRow | DiscordContainer>;
   flags?: number;
 }
