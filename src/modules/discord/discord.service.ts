@@ -33,12 +33,19 @@ interface DiscordOAuthState {
   groupId: number;
 }
 
+// 로그인 쿠키와 같은 비밀키로 서명하면 이 state를 쿠키에 넣어 authMiddleware를 통과시킬
+// 수 있었음(req.user.id가 undefined가 돼서 GET /groups가 전체 그룹을 반환, 2026-10-27
+// 발견) — discordLink.service.ts의 링크 토큰처럼 용도별로 비밀키를 분리함.
+function oauthStateSecret(): string {
+  return `${env.JWT_SECRET}:discord-oauth-state`;
+}
+
 export function buildDiscordBotInviteUrl(groupId: number): string {
   if (!env.DISCORD_APPLICATION_ID || !env.DISCORD_OAUTH_REDIRECT_URI) {
     throw new AppError(500, "디스코드 봇 연동이 아직 설정되지 않았습니다.");
   }
 
-  const state = jwt.sign({ groupId } satisfies DiscordOAuthState, env.JWT_SECRET, {
+  const state = jwt.sign({ groupId } satisfies DiscordOAuthState, oauthStateSecret(), {
     expiresIn: DISCORD_OAUTH_STATE_EXPIRES_IN,
   });
 
@@ -60,8 +67,9 @@ export function buildDiscordBotInviteUrl(groupId: number): string {
 
 export function verifyDiscordOAuthState(state: string): number {
   try {
-    const payload = jwt.verify(state, env.JWT_SECRET) as DiscordOAuthState;
-    return payload.groupId;
+    const payload = jwt.verify(state, oauthStateSecret()) as Partial<DiscordOAuthState>;
+    if (!Number.isInteger(payload.groupId)) throw new Error("invalid state payload");
+    return payload.groupId as number;
   } catch {
     throw new AppError(400, "유효하지 않거나 만료된 요청입니다. 다시 시도해주세요.");
   }

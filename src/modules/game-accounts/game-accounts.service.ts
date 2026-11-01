@@ -95,6 +95,8 @@ async function findOwnedGameAccountOrThrow(userId: number, gameAccountId: number
 // 사람 프로필에서 "지금 갱신"을 대신 눌러줄 수 있어야 해서 본인 전용으로는 못 막지만,
 // 로그인만 하면 아무 계정 ID로나 라이엇 API를 반복 호출해서 우리 API 키 한도를
 // 태울 수 있는 구멍이 있었음(2026-10-10) — 같은 그룹 멤버로만 좁힘.
+// 조회 API(stats/match-history/champion-*)도 로그인만 하면 아무 계정 ID로나 남의
+// 전적을 볼 수 있어서 같은 기준을 적용함(2026-10-27).
 async function findAccessibleGameAccountOrThrow(requesterId: number, gameAccountId: number) {
   const account = await findGameAccountOrThrow(gameAccountId);
   if (account.userId === requesterId) return account;
@@ -104,7 +106,7 @@ async function findAccessibleGameAccountOrThrow(requesterId: number, gameAccount
     select: { id: true },
   });
   if (!sharedGroup) {
-    throw new AppError(403, "본인이나 같은 그룹 멤버의 계정만 갱신할 수 있습니다.");
+    throw new AppError(403, "본인이나 같은 그룹 멤버의 계정만 볼 수 있습니다.");
   }
 
   return account;
@@ -575,11 +577,8 @@ async function recomputePositionStats(gameAccountId: number) {
 }
 
 // API 명세서: GET /game-accounts/:id/match-history
-export async function listMatchHistory(gameAccountId: number, query: ListMatchHistoryQuery) {
-  const account = await prisma.gameAccount.findUnique({ where: { id: gameAccountId } });
-  if (!account) {
-    throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
-  }
+export async function listMatchHistory(requesterId: number, gameAccountId: number, query: ListMatchHistoryQuery) {
+  await findAccessibleGameAccountOrThrow(requesterId, gameAccountId);
 
   const participants = await prisma.matchHistoryParticipant.findMany({
     where: { gameAccountId, position: query.position },
@@ -610,11 +609,8 @@ export async function listMatchHistory(gameAccountId: number, query: ListMatchHi
 }
 
 // API 명세서: GET /game-accounts/:id/champion-masteries
-export async function listChampionMasteries(gameAccountId: number, limit: number) {
-  const account = await prisma.gameAccount.findUnique({ where: { id: gameAccountId } });
-  if (!account) {
-    throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
-  }
+export async function listChampionMasteries(requesterId: number, gameAccountId: number, limit: number) {
+  await findAccessibleGameAccountOrThrow(requesterId, gameAccountId);
 
   const masteries = await prisma.championMastery.findMany({
     where: { gameAccountId },
@@ -633,11 +629,8 @@ export async function listChampionMasteries(gameAccountId: number, limit: number
 // 새 테이블 없이, 이미 동기화해둔 match_history_participants를 championId로
 // 그때그때 묶어서 계산함 — 그래서 이 값은 "평생 전적"이 아니라 "지금까지
 // match-history/sync로 동기화해둔 매치 범위 안에서"의 챔피언별 승률.
-export async function getChampionStats(gameAccountId: number) {
-  const account = await prisma.gameAccount.findUnique({ where: { id: gameAccountId } });
-  if (!account) {
-    throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
-  }
+export async function getChampionStats(requesterId: number, gameAccountId: number) {
+  await findAccessibleGameAccountOrThrow(requesterId, gameAccountId);
 
   const participants = await prisma.matchHistoryParticipant.findMany({
     where: { gameAccountId },
@@ -667,11 +660,8 @@ export async function getChampionStats(gameAccountId: number) {
 }
 
 // API 명세서: GET /game-accounts/:id/stats
-export async function getGameAccountStats(gameAccountId: number) {
-  const account = await prisma.gameAccount.findUnique({ where: { id: gameAccountId } });
-  if (!account) {
-    throw new AppError(404, "연결된 게임 계정을 찾을 수 없습니다.");
-  }
+export async function getGameAccountStats(requesterId: number, gameAccountId: number) {
+  await findAccessibleGameAccountOrThrow(requesterId, gameAccountId);
 
   const [stats, positionStats] = await Promise.all([
     prisma.userGameStat.findUnique({ where: { gameAccountId } }),
