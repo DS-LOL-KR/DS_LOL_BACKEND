@@ -216,7 +216,7 @@ export async function recalculateTiers(groupId: number) {
 }
 
 // API 명세서: POST /groups/:id/tiers/refresh
-// 그룹원 전체의 라이엇 티어를 받아와 internal_mmr/라인 MMR을 다시 계산한 뒤, GET
+// 그룹원 전체의 최근 매치와 라이엇 티어를 받아와 internal_mmr/라인 MMR을 다시 계산한 뒤, GET
 // /groups/:id/tiers와 같은 모양의 티어표에 갱신 결과(refresh: 성공/건너뜀/실패 수)를 붙여 돌려줌. 5분 안에 이미 갱신된
 // 계정은 건너뜀(refreshGroupGameAccounts).
 export async function refreshGroupTiers(groupId: number) {
