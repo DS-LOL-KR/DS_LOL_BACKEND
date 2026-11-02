@@ -7,6 +7,7 @@ import {
   buildLatestMatchReply,
   buildPlayerStatsReply,
   buildTierTableReply,
+  handleTierButton,
   verifyDiscordOAuthState,
 } from "./discord.service";
 import { DEFAULT_RECRUIT_SIZE, handleRecruitButton, startRecruit } from "./discordRecruit.service"; // /내전모집 + 모집 버튼
@@ -96,7 +97,7 @@ export async function handleInteraction(req: Request, res: Response, next: NextF
       if (!guildId) {
         data = onlyYou("이 명령어는 서버(길드) 안에서만 사용할 수 있어요.");
       } else if (commandName === "티어표") {
-        data = await buildTierTableReply(guildId);
+        data = await buildTierTableReply(guildId, discordUserId);
       } else if (commandName === "전적") {
         const nickname = getOptionValue(body.data, "닉네임");
         data = nickname ? await buildPlayerStatsReply(guildId, nickname) : onlyYou("닉네임을 입력해 주세요.");
@@ -123,6 +124,10 @@ export async function handleInteraction(req: Request, res: Response, next: NextF
         }
         if (customId.startsWith("match:")) {
           res.status(200).json(await handleMatchButton(guildId, discordUserId, customId));
+          return;
+        }
+        if (customId.startsWith("tier:")) {
+          res.status(200).json(await handleTierButton(guildId, discordUserId, customId));
           return;
         }
         if (customId.startsWith("rate:")) {

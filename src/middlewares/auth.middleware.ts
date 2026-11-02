@@ -22,8 +22,16 @@ export function authMiddleware(req: Request, _res: Response, next: NextFunction)
   }
 
   try {
-    const payload = jwt.verify(token, env.JWT_SECRET) as AuthTokenPayload;
-    req.user = { id: payload.id, email: payload.email };
+    const payload = jwt.verify(token, env.JWT_SECRET) as Partial<AuthTokenPayload>;
+    // 서명만 맞으면 통과시키던 시절, 같은 비밀키로 서명된 다른 용도의 토큰(디스코드
+    // OAuth state 등)을 쿠키에 넣으면 req.user.id가 undefined인 채로 통과했고, Prisma가
+    // where의 undefined를 "조건 없음"으로 처리해서 남의 데이터까지 조회됐음(2026-10-27).
+    // 비밀키 분리와 별개로, 로그인 토큰 모양이 아니면 무조건 거부함.
+    if (!Number.isInteger(payload.id) || typeof payload.email !== "string") {
+      next(new AppError(401, "Unauthorized"));
+      return;
+    }
+    req.user = { id: payload.id as number, email: payload.email };
     next();
   } catch {
     // 서명이 안 맞거나(위조) 만료된 토큰이거나 — 이유를 구분해서 알려줄 필요는

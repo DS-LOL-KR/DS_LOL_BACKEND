@@ -98,7 +98,7 @@ export async function getGameAccountStats(req: Request, res: Response, next: Nex
     const id = parseId(req.params.id, next);
     if (id === null) return;
 
-    const stats = await gameAccountsService.getGameAccountStats(id);
+    const stats = await gameAccountsService.getGameAccountStats(req.user!.id, id);
     res.status(200).json({ stats });
   } catch (err) {
     next(err);
@@ -136,7 +136,7 @@ export async function listMatchHistory(req: Request, res: Response, next: NextFu
       return;
     }
 
-    const matches = await gameAccountsService.listMatchHistory(id, parsed.data);
+    const matches = await gameAccountsService.listMatchHistory(req.user!.id, id, parsed.data);
     res.status(200).json({ matches });
   } catch (err) {
     next(err);
@@ -155,7 +155,7 @@ export async function listChampionMasteries(req: Request, res: Response, next: N
       return;
     }
 
-    const masteries = await gameAccountsService.listChampionMasteries(id, parsed.data.limit);
+    const masteries = await gameAccountsService.listChampionMasteries(req.user!.id, id, parsed.data.limit);
     res.status(200).json({ masteries });
   } catch (err) {
     next(err);
@@ -168,7 +168,7 @@ export async function getChampionStats(req: Request, res: Response, next: NextFu
     const id = parseId(req.params.id, next);
     if (id === null) return;
 
-    const championStats = await gameAccountsService.getChampionStats(id);
+    const championStats = await gameAccountsService.getChampionStats(req.user!.id, id);
     res.status(200).json({ championStats });
   } catch (err) {
     next(err);
