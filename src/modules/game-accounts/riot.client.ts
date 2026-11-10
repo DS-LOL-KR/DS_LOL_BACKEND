@@ -32,6 +32,34 @@ const riotHttp = axios.create({
 });
 useRiotProxy(riotHttp);
 
+// Development Key 초당 20건 한도를 모든 라이엇 호출에 걸쳐 지키는 공용 제한 — 예전엔
+// 호출부마다 sleep(60), 워커마다 500ms 지연을 둬서 맞췄는데, 그러면 매치 상세를 동시에
+// 받을 수가 없었음(프록시가 LA 경유라 호출당 0.3~0.6초, 2026-11-02 측정). 최근 1초 안에
+// 시작한 요청이 이만큼이면 자리가 날 때까지 기다림. 요청 시작 시각과 라이엇 도착 시각이
+// 조금씩 어긋나서 20이 아니라 여유를 둠. 2분당 100건 한도는 여기서 막지 않음(기다리면
+// 응답이 최대 2분 늦어지므로 429로 바로 알려주는 쪽을 택함).
+const RIOT_MAX_REQUESTS_PER_SECOND = 18;
+const recentRequestStartTimes: number[] = [];
+
+export async function waitForRiotRateLimit(): Promise<void> {
+  for (;;) {
+    const now = Date.now();
+    while (recentRequestStartTimes.length > 0 && now - recentRequestStartTimes[0] >= 1000) {
+      recentRequestStartTimes.shift();
+    }
+    if (recentRequestStartTimes.length < RIOT_MAX_REQUESTS_PER_SECOND) {
+      recentRequestStartTimes.push(now);
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000 - (now - recentRequestStartTimes[0])));
+  }
+}
+
+riotHttp.interceptors.request.use(async (config) => {
+  await waitForRiotRateLimit();
+  return config;
+});
+
 // 라이엇 API 에러를 그대로 던지면 error.middleware.ts에서 전부 500 "Internal Server
 // Error"가 돼서, 프론트가 "닉네임#태그 오타"와 "잠시 후 재시도"를 구분할 수 없었음
 // (2026-09-29). 상태코드별로 의미 있는 AppError로 바꿔서 던짐.

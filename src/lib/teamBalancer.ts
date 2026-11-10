@@ -13,6 +13,8 @@
  *   겹치지 않는다면 반대 팀으로 보낸다(라인 중복보다 mmr 밸런스를 우선하되,
  *   양쪽 다 mmr상 큰 차이가 없다면 라인 중복을 피함).
  * - 포지션 정보가 없는(null) 참가자는 그냥 mmr 기준으로만 배정된다.
+ * - 위 규칙보다 인원 균형이 우선 — 한 팀이 절반(홀수면 올림)을 채우면 나머지는 전부
+ *   반대 팀으로 감(라인 중복 회피로 반대 팀에 계속 보내다 6대4가 되던 문제, 2026-11-03).
  */
 
 export type Team = "TEAM_A" | "TEAM_B";
@@ -65,10 +67,17 @@ export function balanceTeams(participants: TeamBalancerParticipant[]): TeamBalan
 
   const sorted = shuffleWithinSimilarMmrBuckets([...participants].sort((a, b) => b.mmr - a.mmr));
 
+  // 한 팀 최대 인원(10명이면 5, 11명이면 6). 예전엔 "합이 낮은 팀에 넣기"만 해서 인원
+  // 제한이 없었고, MMR이 한 명만 튀거나(연동 안 한 멤버의 기본값 1000 등) 하면 낮은 팀에
+  // 계속 몰려서 6대4가 나왔음(2026-11-03 문의). 꽉 찬 팀에는 더 안 넣고 반대 팀으로 보냄.
+  const maxTeamSize = Math.ceil(sorted.length / 2);
+
   const positionsInTeamA = new Set<string>();
   const positionsInTeamB = new Set<string>();
   let sumA = 0;
   let sumB = 0;
+  let countA = 0;
+  let countB = 0;
   const assignments: TeamBalancerAssignment[] = [];
 
   for (const participant of sorted) {
@@ -84,12 +93,16 @@ export function balanceTeams(participants: TeamBalancerParticipant[]): TeamBalan
 
     // mmr이 더 낮은 팀에 넣으면 라인이 겹치는데, 반대 팀엔 안 겹치는 경우에만
     // 반대 팀으로 보냄 — 그 외에는 mmr 밸런스를 그대로 따름.
-    const target = lowerTeamOverlaps && !otherTeamOverlaps ? otherTeam : lowerTeam;
+    const preferred = lowerTeamOverlaps && !otherTeamOverlaps ? otherTeam : lowerTeam;
+    const isFull = (team: Team) => (team === "TEAM_A" ? countA : countB) >= maxTeamSize;
+    const target: Team = isFull(preferred) ? (preferred === "TEAM_A" ? "TEAM_B" : "TEAM_A") : preferred;
 
     if (target === "TEAM_A") {
+      countA += 1;
       sumA += participant.mmr;
       if (participant.preferredPosition) positionsInTeamA.add(participant.preferredPosition);
     } else {
+      countB += 1;
       sumB += participant.mmr;
       if (participant.preferredPosition) positionsInTeamB.add(participant.preferredPosition);
     }

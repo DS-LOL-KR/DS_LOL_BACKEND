@@ -20,10 +20,6 @@ import type {
   UpdatePreferredPositionInput,
 } from "./game-accounts.schema";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 // 챔피언 숙련도는 화면에 몇 개 보여주는 용도라 전체(많으면 170개)를 다 저장할
 // 필요가 없음 — 계정당 상위 N개만 유지.
 const TOP_CHAMPION_MASTERY_COUNT = 3;
@@ -293,13 +289,21 @@ export async function updatePreferredPosition(
 // 라이엇 API를 반복 호출하지 않게 하려는 기준.
 const GROUP_REFRESH_SKIP_MS = 5 * 60 * 1000;
 const GROUP_REFRESH_CONCURRENCY = 3;
-const GROUP_REFRESH_DELAY_MS = 500;
+// 그룹 전체 갱신에서 계정마다 받아올 최근 매치 수. 개인 "지금 갱신"(기본 20)보다 작게 —
+// 이미 받은 매치는 상세 조회를 안 해서 평소엔 새 판 몇 개만 호출하지만, 오래 안 갱신한
+// 계정이 많으면 계정당 최대 1+N건이라 2분당 100건 한도와 Cloudflare 100초 응답 제한에
+// 걸리기 쉬움.
+const GROUP_SYNC_MATCH_COUNT = 5;
 
 // API 명세서: POST /groups/:id/tiers/refresh (tiers.service.ts에서 호출)
 // 매일 자정에 모든 계정을 돌던 배치(syncGameAccountStats.job.ts)를 없애고, 그룹
 // 안에서 버튼 하나로 그룹원 전체의 티어/MMR을 한 번에 갱신하게 바꿈(2026-09-28).
 // 계정 하나가 실패해도(라이엇 API 에러 등) 나머지는 계속 진행하고, 실패 내역을
 // 모아서 반환함.
+// 예전엔 티어(performRefresh)만 갱신하고 매치 동기화는 안 해서, 개인 "지금 갱신"을 안
+// 누른 멤버는 전적·라인 MMR·performanceScore 반영분이 그룹 전체 갱신으로는 전혀 안
+// 움직였음(2026-11-02, 대부분 10-11 이후 매치가 없던 상태로 발견). 동기화를 먼저 하고
+// performRefresh가 새 매치까지 포함해 internal_mmr/라인 MMR을 재합산하게 함.
 export async function refreshGroupGameAccounts(
   groupId: number,
   gameId: number,
@@ -327,26 +331,33 @@ export async function refreshGroupGameAccounts(
 
   // 한 명씩 돌면 라이엇 프록시 왕복(~2.6초) 때문에 19명에 ~55초 걸려서(2026-10-11
   // 측정) 워커 GROUP_REFRESH_CONCURRENCY개가 큐에서 하나씩 꺼내 동시에 처리함.
-  // 워커마다 계정 하나 끝나면 지연을 둬서, 라이엇이 즉시 응답해도 초당
-  // 3워커 × 3호출 / 0.5초 = 18건으로 Development Key 한도(초당 20건) 안에 들게 함.
-  // 2분당 100건 한도는 동시성과 무관 — 33명 넘는 그룹은 뒤쪽이 429로 errors에 들어감.
+  // 초당 20건 한도는 riot.client.ts의 공용 제한이 지켜서 워커 사이에 따로 지연을 안 둠.
+  // 2분당 100건 한도는 동시성과 무관 — 한 번 429가 나면 남은 계정은 호출해봐야 전부 429라
+  // 더 꺼내지 않고 errors에 "건너뜀"으로 넣음. 이미 받은 매치는 다음 갱신 때 다시 안 받으니,
+  // 잠시 후 다시 누르면 이어서 진행됨.
   let next = 0;
+  let rateLimited = false;
   const worker = async () => {
-    while (next < pending.length) {
+    while (next < pending.length && !rateLimited) {
       const account = pending[next++];
       try {
+        await performMatchHistorySync(account, GROUP_SYNC_MATCH_COUNT);
         await performRefresh(account);
         succeeded += 1;
       } catch (err) {
+        if (err instanceof AppError && err.statusCode === 429) rateLimited = true;
         errors.push({
           gameAccountId: account.id,
           message: err instanceof Error ? err.message : String(err),
         });
       }
-      await sleep(GROUP_REFRESH_DELAY_MS);
     }
   };
   await Promise.all(Array.from({ length: GROUP_REFRESH_CONCURRENCY }, worker));
+
+  for (const account of pending.slice(next)) {
+    errors.push({ gameAccountId: account.id, message: "라이엇 API 요청 한도를 넘어 건너뛰었습니다. 잠시 후 다시 시도해 주세요." });
+  }
 
   return { total: accounts.length, succeeded, skipped, failed: errors.length, errors };
 }
@@ -407,9 +418,17 @@ export async function performMatchHistorySync(
   const existingIds = new Set(existingParticipations.map((p) => p.match.riotMatchId));
   const newMatchIds = matchIds.filter((id) => !existingIds.has(id));
 
+  // 매치 상세는 한 판씩 순서대로 받으면 프록시 왕복(LA 경유, 호출당 0.3~0.6초)이 판 수만큼
+  // 쌓여서 동시에 받음 — 초당 한도는 riot.client.ts의 공용 제한이 지킴(2026-11-02).
+  // allSettled: 일부가 429 등으로 실패해도 받아온 매치는 저장하고 나서 에러를 던짐 —
+  // 저장된 매치는 다음 동기화 때 다시 안 받으니 재시도하면 이어서 진행됨.
+  const fetched = await Promise.allSettled(newMatchIds.map((matchId) => fetchMatchById(matchId)));
+  const firstFailure = fetched.find((r): r is PromiseRejectedResult => r.status === "rejected");
+
   let syncedCount = 0;
-  for (const matchId of newMatchIds) {
-    const match = await fetchMatchById(matchId);
+  for (const result of fetched) {
+    if (result.status === "rejected") continue;
+    const match = result.value;
     const participant = match.info.participants.find((p) => p.puuid === account.puuid);
 
     if (!participant) {
@@ -478,11 +497,10 @@ export async function performMatchHistorySync(
     }
 
     syncedCount += 1;
-    // Development Key 기준 초당 20건 제한을 피하기 위한 최소한의 지연.
-    await sleep(60);
   }
 
   const positionStats = await recomputePositionStats(gameAccountId);
+  if (firstFailure) throw firstFailure.reason;
 
   return {
     syncedCount,
