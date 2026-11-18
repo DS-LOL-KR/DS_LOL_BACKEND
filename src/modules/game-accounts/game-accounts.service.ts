@@ -12,7 +12,13 @@ import {
   type RiotMatchParticipant,
 } from "./riot.client"; // 실제 라이엇 API 호출
 import { getChampionNameMap } from "./championData"; // championId -> 한글 챔피언 이름
-import { calculateInternalMmr, performanceScoreToMmrDelta, CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr 재합산 공식 + 공식 버전 (matches.service.ts와 공유)
+import { logger } from "../../lib/logger"; // 서버 시작 시 MMR 재계산(backfillOutdatedMmr) 결과 기록
+import {
+  calculateInternalMmr,
+  calculatePositionMmr,
+  performanceScoreToMmrDelta,
+  CURRENT_MMR_VERSION,
+} from "../../lib/mmr"; // internal_mmr 재합산 공식 + 공식 버전 (matches.service.ts와 공유)
 import type {
   CreateGameAccountInput,
   ListMatchHistoryQuery,
@@ -509,30 +515,6 @@ export async function performMatchHistorySync(
   };
 }
 
-// user_position_stats.position_mmr을 실제로 계산하는 공식 (2026-08-25 도입 —
-// 그 전까진 스키마에만 있고 아무도 안 채워서 항상 기본값 1000이었음).
-// 전체 internal_mmr을 기준선으로 삼고, 그 라인의 승률이 50%보다 높으면 올리고
-// 낮으면 내림. 표본이 적을 때(예: 2게임 100% 승률) 과하게 반영되지 않도록
-// 게임 수 기준 신뢰도 계수를 곱함 — POSITION_MMR_FULL_CONFIDENCE_GAMES판
-// 이상이어야 보정폭(POSITION_MMR_SWING)을 100% 반영.
-// avgPerformanceScore(라인전 상대 대비 KDA/CS/딜량 평균, -50~50)도 같은 신뢰도로
-// 반영 — "승패만이 아니라 그 판을 얼마나 잘했는지"도 보라는 요청으로 추가함
-// (2026-08-28). 이겨도 라인전에서 밀렸으면 소폭 감점, 져도 캐리했으면 소폭 가점.
-const POSITION_MMR_SWING = 200;
-const POSITION_MMR_FULL_CONFIDENCE_GAMES = 20;
-
-function calculatePositionMmr(
-  baselineMmr: number,
-  winRate: number,
-  gamesPlayed: number,
-  avgPerformanceScore: number,
-): number {
-  const confidence = Math.min(gamesPlayed / POSITION_MMR_FULL_CONFIDENCE_GAMES, 1);
-  return Math.round(
-    baselineMmr + (winRate - 0.5) * POSITION_MMR_SWING * confidence + avgPerformanceScore * confidence,
-  );
-}
-
 // match_history_participants.position은 라이엇 원본 값(TOP/JUNGLE/MIDDLE/BOTTOM/
 // UTILITY)인데, 그룹 티어 필터(GET /groups/:id/tiers?position=)나 내전 팀 배정
 // (assignedPosition)은 전부 우리 내부 약어(TOP/JUG/MID/ADC/SUP)를 씀 — 매핑 없이
@@ -550,13 +532,17 @@ const RIOT_TO_INTERNAL_POSITION: Record<string, string> = {
 // 다시 계산. 랭크 게임(RANKED_SOLO_5x5)이 하나라도 있으면 그 라인은 랭크 게임만
 // 집계하고, 랭크 게임이 하나도 없으면 그제서야 일반 게임까지 포함 — "최대한 랭크
 // 기준으로, 없으면 일반전으로" 요청 반영 (2026-08-28).
-async function recomputePositionStats(gameAccountId: number) {
+// 라인 MMR은 internal_mmr을 기준점으로 쓰므로, internal_mmr이 바뀌는 곳(지금 갱신,
+// 매치 동기화, 내전 결과 입력/삭제, 매너 평가)마다 다시 불러야 함 — 예전엔 동기화 때만
+// 돌아서 내전/평가로 바뀐 전체 MMR이 라인 MMR에 안 따라왔음(2026-11-18 발견).
+// db: 트랜잭션 안에서 부를 때 그 트랜잭션 클라이언트를 넘김.
+export async function recomputePositionStats(gameAccountId: number, db: Prisma.TransactionClient = prisma) {
   const [participants, gameAccount] = await Promise.all([
-    prisma.matchHistoryParticipant.findMany({
+    db.matchHistoryParticipant.findMany({
       where: { gameAccountId, position: { not: null } },
       include: { match: { select: { queueType: true } } },
     }),
-    prisma.gameAccount.findUnique({ where: { id: gameAccountId }, include: { stats: true } }),
+    db.gameAccount.findUnique({ where: { id: gameAccountId }, include: { stats: true } }),
   ]);
 
   const baselineMmr = gameAccount?.stats?.internalMmr ?? 1000;
@@ -581,9 +567,14 @@ async function recomputePositionStats(gameAccountId: number) {
     const scored = games.filter((p) => p.performanceScore !== null);
     const avgPerformanceScore =
       scored.length > 0 ? scored.reduce((sum, p) => sum + (p.performanceScore ?? 0), 0) / scored.length : 0;
-    const positionMmr = calculatePositionMmr(baselineMmr, winRate, games.length, avgPerformanceScore);
+    const positionMmr = calculatePositionMmr({
+      baselineMmr,
+      gamesPlayed: games.length,
+      winRate,
+      avgPerformanceScore,
+    });
 
-    const stat = await prisma.userPositionStat.upsert({
+    const stat = await db.userPositionStat.upsert({
       where: { gameAccountId_position: { gameAccountId, position } },
       update: { gamesPlayed: games.length, winRate, positionMmr },
       create: { gameAccountId, position, gamesPlayed: games.length, winRate, positionMmr },
@@ -687,4 +678,39 @@ export async function getGameAccountStats(requesterId: number, gameAccountId: nu
   ]);
 
   return { stats, positionStats };
+}
+
+// MMR 공식(CURRENT_MMR_VERSION)이 바뀐 뒤 서버가 처음 뜰 때, 예전 버전으로 계산돼
+// 있는 계정의 internal_mmr과 라인 MMR을 저장된 기록(공식 티어, 매너, 내전, 동기화된
+// 매치)만으로 다시 계산함. 라이엇 API는 안 부름 — 그래서 "지금 갱신"을 안 누른
+// 계정도 배포 직후 바로 새 공식으로 보임. 계정 하나가 실패해도 나머지는 계속 진행.
+export async function backfillOutdatedMmr(): Promise<{ updated: number; failed: number }> {
+  const outdated = await prisma.userGameStat.findMany({
+    where: { mmrVersion: { lt: CURRENT_MMR_VERSION } },
+    include: { gameAccount: { select: { id: true, userId: true, gameId: true } } },
+  });
+
+  let updated = 0;
+  let failed = 0;
+  for (const stat of outdated) {
+    try {
+      await prisma.$transaction(async (tx) => {
+        const internalMmr = await rebuildInternalMmr(stat.gameAccount, stat.officialTier, stat.mannerScore, tx);
+        await tx.userGameStat.update({
+          where: { id: stat.id },
+          data: { internalMmr, mmrVersion: CURRENT_MMR_VERSION },
+        });
+        await recomputePositionStats(stat.gameAccountId, tx);
+      });
+      updated += 1;
+    } catch (err) {
+      failed += 1;
+      logger.error("MMR backfill failed", { gameAccountId: stat.gameAccountId, error: String(err) });
+    }
+  }
+
+  if (outdated.length > 0) {
+    logger.info("MMR backfill done", { version: CURRENT_MMR_VERSION, updated, failed });
+  }
+  return { updated, failed };
 }
