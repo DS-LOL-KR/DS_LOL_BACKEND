@@ -3,7 +3,7 @@ import { prisma } from "../../config/prisma"; // custom_matches, custom_match_pa
 import { AppError } from "../../lib/AppError"; // 400/403/404/409 등 의도된 에러를 명확하게 표현하기 위해 사용
 import { balanceTeams, type TeamBalancerParticipant } from "../../lib/teamBalancer"; // 실제 팀 배정 알고리즘
 import { CURRENT_MMR_VERSION } from "../../lib/mmr"; // internal_mmr을 계산한 공식 버전 기록용
-import { rebuildInternalMmr } from "../game-accounts/game-accounts.service"; // 매너점수가 바뀔 때 internal_mmr을 기록 기준으로 다시 계산
+import { rebuildInternalMmr, recomputePositionStats } from "../game-accounts/game-accounts.service"; // internal_mmr을 기록 기준으로 다시 계산 + 그걸 기준점으로 쓰는 라인 MMR 갱신
 import { sendDiscordNotification } from "../../lib/discord"; // 팀 구성/내전 종료를 그룹 디스코드 채널에 알리기 위해 사용
 import { buildMatchResultEmbed, buildTeamsEmbed, type DiscordEmbed } from "../../lib/discordEmbeds"; // 알림 임베드 디자인(봇 답장과 공용)
 // 아래 각 요청의 바디 형태를 명시하기 위해 사용 (평가 생성 / 내전 생성 / 내전 종료 /
@@ -466,6 +466,8 @@ export async function finishMatch(
           update: { internalMmr: { increment: mmrChange } },
           create: { gameAccountId: gameAccount.id, internalMmr: 1000 + mmrChange },
         });
+        // 라인 MMR도 바뀐 internal_mmr 기준으로 — 팀 구성/라인 티어표가 라인 MMR을 씀
+        await recomputePositionStats(gameAccount.id, tx);
       }
     }
   });
@@ -546,6 +548,7 @@ async function recomputeMannerScore(
     update: { mannerScore: average, internalMmr, mmrVersion: CURRENT_MMR_VERSION },
     create: { gameAccountId: gameAccount.id, mannerScore: average, internalMmr, mmrVersion: CURRENT_MMR_VERSION },
   });
+  await recomputePositionStats(gameAccount.id, db);
 }
 
 // 내전들을 평가·참가자 행까지 지우고, 거기 참가했거나 평가받은 유저의 manner_score/

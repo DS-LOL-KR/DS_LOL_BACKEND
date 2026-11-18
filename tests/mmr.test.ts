@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest"; // 테스트 러너의 기본 함수들 (테스트 그룹/케이스/검증)
-import { calculateInternalMmr, officialTierToScore, performanceScoreToMmrDelta } from "../src/lib/mmr"; // 테스트 대상 MMR 공식
+import {
+  calculateInternalMmr,
+  calculatePositionMmr,
+  officialTierToScore,
+  performanceScoreToMmrDelta,
+} from "../src/lib/mmr"; // 테스트 대상 MMR 공식
 
 const noHistory = { mannerScore: 3.5, customMatchMmrChangeSum: 0, performanceMmrDeltaSum: 0 };
 
@@ -48,5 +53,38 @@ describe("performanceScoreToMmrDelta", () => {
   it("caps a single match at about ±10", () => {
     expect(performanceScoreToMmrDelta(50)).toBe(10);
     expect(performanceScoreToMmrDelta(-50)).toBe(-10);
+  });
+});
+
+describe("calculatePositionMmr", () => {
+  const line = (gamesPlayed: number, winRate: number, baselineMmr = 1000, avgPerformanceScore = 0) =>
+    calculatePositionMmr({ baselineMmr, gamesPlayed, winRate, avgPerformanceScore });
+
+  it("puts a barely-played line well below the account's overall MMR", () => {
+    expect(line(1, 1)).toBeLessThan(900);
+    expect(line(1, 0)).toBeLessThan(line(1, 1));
+  });
+
+  it("ranks a line main with a good record above someone who touched the line once and won", () => {
+    // 2026-11-18 지적: 적게 하고 승률 높은 사람이 라인 탭 맨 위에 오던 문제
+    expect(line(20, 0.6)).toBeGreaterThan(line(2, 1));
+    expect(line(8, 0.75)).toBeGreaterThan(line(1, 1));
+  });
+
+  it("lets a long 50% record approach the overall MMR", () => {
+    expect(line(90, 0.5)).toBeGreaterThan(980);
+    expect(line(90, 0.5)).toBeLessThanOrEqual(1000);
+  });
+
+  it("moves meaningfully with win rate once there is a real sample", () => {
+    expect(line(30, 0.6) - line(30, 0.4)).toBeGreaterThanOrEqual(55);
+  });
+
+  it("matches the ADC example from the production data", () => {
+    // 플래티넘 4판 25%는 여전히 브론즈 6판 83%보다 위(전체 MMR 차이 195), 1판 0%는 아래
+    expect(line(4, 0.25, 1254)).toBe(1118);
+    expect(line(6, 0.83, 1059)).toBe(1015);
+    expect(line(8, 0.75, 1048)).toBe(1009);
+    expect(line(1, 0, 1139)).toBe(984);
   });
 });
